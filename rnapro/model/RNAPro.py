@@ -91,13 +91,13 @@ class RNAPro(nn.Module):
 
         # Model
         esm_configs = configs.get("esm", {})  # This is used in InputFeatureEmbedder
-        self.input_embedder = InputFeatureEmbedder(
-            **configs.model.input_embedder, esm_configs=esm_configs
-        )
+        # self.input_embedder = InputFeatureEmbedder(
+        #     **configs.model.input_embedder, esm_configs=esm_configs
+        # )
         self.relative_position_encoding = RelativePositionEncoding(
             **configs.model.relative_position_encoding
         )
-        self.template_embedder = RNATemplateEmbedder(**configs.model.template_embedder)
+        # self.template_embedder = RNATemplateEmbedder(**configs.model.template_embedder)
         # if configs.model.use_template == 'ca':
         #     self.template_embedder = TemplateEmbedderCa(**configs.model.template_embedder)
         # elif configs.model.use_template == 'all_atom':
@@ -107,17 +107,17 @@ class RNAPro(nn.Module):
         # else:
         #     self.template_embedder = TemplateEmbedder(**configs.model.template_embedder)
             
-        self.msa_module = MSAModule(
-            **configs.model.msa_module,
-            msa_configs=configs.data.get("msa", {}),
-        )
-        self.constraint_embedder = ConstraintEmbedder(
-            **configs.model.constraint_embedder
-        )
+        # self.msa_module = MSAModule(
+        #     **configs.model.msa_module,
+        #     msa_configs=configs.data.get("msa", {}),
+        # )
+        # self.constraint_embedder = ConstraintEmbedder(
+        #     **configs.model.constraint_embedder
+        # )
         self.pairformer_stack = PairformerStack(**configs.model.pairformer)
         self.diffusion_module = DiffusionModule(**configs.model.diffusion_module)
-        self.distogram_head = DistogramHead(**configs.model.distogram_head)
-        self.confidence_head = ConfidenceHead(**configs.model.confidence_head)
+        # self.distogram_head = DistogramHead(**configs.model.distogram_head)
+        # self.confidence_head = ConfidenceHead(**configs.model.confidence_head)
 
         self.c_s, self.c_z, self.c_s_inputs = (
             configs.c_s,
@@ -489,6 +489,7 @@ class RNAPro(nn.Module):
             inplace_safe=inplace_safe,
             chunk_size=chunk_size,
         )
+        
         if mode == "inference":
             keys_to_delete = []
             for key in input_feature_dict.keys():
@@ -505,6 +506,7 @@ class RNAPro(nn.Module):
             for key in keys_to_delete:
                 del input_feature_dict[key]
             torch.cuda.empty_cache()
+
         step_trunk = time.time()
         time_tracker.update({"pairformer": step_trunk - step_st})
         # Sample diffusion
@@ -515,6 +517,7 @@ class RNAPro(nn.Module):
         noise_schedule = self.inference_noise_scheduler(
             N_step=N_step, device=s_inputs.device, dtype=s_inputs.dtype
         )
+        
         pred_dict["coordinate"] = self.sample_diffusion(
             denoise_net=self.diffusion_module,
             input_feature_dict=input_feature_dict,
@@ -646,70 +649,70 @@ class RNAPro(nn.Module):
         log_dict = {}
         pred_dict = {}
 
-        # Mini-rollout: used for confidence and label permutation
-        with torch.no_grad():
-            # [..., 1, N_atom, 3]
-            N_sample_mini_rollout = self.configs.sample_diffusion[
-                "N_sample_mini_rollout"
-            ]  # =1
-            N_step_mini_rollout = self.configs.sample_diffusion["N_step_mini_rollout"]
+        # # Mini-rollout: used for confidence and label permutation
+        # with torch.no_grad():
+        #     # [..., 1, N_atom, 3]
+        #     N_sample_mini_rollout = self.configs.sample_diffusion[
+        #         "N_sample_mini_rollout"
+        #     ]  # =1
+        #     N_step_mini_rollout = self.configs.sample_diffusion["N_step_mini_rollout"]
 
-            coordinate_mini = self.sample_diffusion(
-                denoise_net=self.diffusion_module,
-                input_feature_dict=input_feature_dict,
-                s_inputs=s_inputs.detach(),
-                s_trunk=s.detach(),
-                z_trunk=z.detach(),
-                N_sample=N_sample_mini_rollout,
-                noise_schedule=self.inference_noise_scheduler(
-                    N_step=N_step_mini_rollout,
-                    device=s_inputs.device,
-                    dtype=s_inputs.dtype,
-                ),
-            )
-            coordinate_mini.detach_()
-            pred_dict["coordinate_mini"] = coordinate_mini
+        #     coordinate_mini = self.sample_diffusion(
+        #         denoise_net=self.diffusion_module,
+        #         input_feature_dict=input_feature_dict,
+        #         s_inputs=s_inputs.detach(),
+        #         s_trunk=s.detach(),
+        #         z_trunk=z.detach(),
+        #         N_sample=N_sample_mini_rollout,
+        #         noise_schedule=self.inference_noise_scheduler(
+        #             N_step=N_step_mini_rollout,
+        #             device=s_inputs.device,
+        #             dtype=s_inputs.dtype,
+        #         ),
+        #     )
+        #     coordinate_mini.detach_()
+        #     pred_dict["coordinate_mini"] = coordinate_mini
 
-            # Permute ground truth to match mini-rollout prediction
-            label_dict, perm_log_dict = (
-                symmetric_permutation.permute_label_to_match_mini_rollout(
-                    coordinate_mini,
-                    input_feature_dict,
-                    label_dict,
-                    label_full_dict,
-                )
-            )
-            log_dict.update(perm_log_dict)
+        #     # Permute ground truth to match mini-rollout prediction
+        #     label_dict, perm_log_dict = (
+        #         symmetric_permutation.permute_label_to_match_mini_rollout(
+        #             coordinate_mini,
+        #             input_feature_dict,
+        #             label_dict,
+        #             label_full_dict,
+        #         )
+        #     )
+        #     log_dict.update(perm_log_dict)
 
-        # Confidence: use mini-rollout prediction, and detach token embeddings
-        drop_embedding = (
-            random.random() < self.configs.model.confidence_embedding_drop_rate
-        )
-        plddt_pred, pae_pred, pde_pred, resolved_pred = self.run_confidence_head(
-            input_feature_dict=input_feature_dict,
-            s_inputs=s_inputs,
-            s_trunk=s,
-            z_trunk=z,
-            pair_mask=None,
-            x_pred_coords=coordinate_mini,
-            use_embedding=not drop_embedding,
-            triangle_multiplicative=self.configs.triangle_multiplicative,
-            triangle_attention=self.configs.triangle_attention,
-            inplace_safe=inplace_safe,
-            chunk_size=chunk_size,
-        )
-        pred_dict.update(
-            {
-                "plddt": plddt_pred,
-                "pae": pae_pred,
-                "pde": pde_pred,
-                "resolved": resolved_pred,
-            }
-        )
+        # # Confidence: use mini-rollout prediction, and detach token embeddings
+        # drop_embedding = (
+        #     random.random() < self.configs.model.confidence_embedding_drop_rate
+        # )
+        # plddt_pred, pae_pred, pde_pred, resolved_pred = self.run_confidence_head(
+        #     input_feature_dict=input_feature_dict,
+        #     s_inputs=s_inputs,
+        #     s_trunk=s,
+        #     z_trunk=z,
+        #     pair_mask=None,
+        #     x_pred_coords=coordinate_mini,
+        #     use_embedding=not drop_embedding,
+        #     triangle_multiplicative=self.configs.triangle_multiplicative,
+        #     triangle_attention=self.configs.triangle_attention,
+        #     inplace_safe=inplace_safe,
+        #     chunk_size=chunk_size,
+        # )
+        # pred_dict.update(
+        #     {
+        #         "plddt": plddt_pred,
+        #         "pae": pae_pred,
+        #         "pde": pde_pred,
+        #         "resolved": resolved_pred,
+        #     }
+        # )
 
-        if self.train_confidence_only:
-            # Skip diffusion loss and distogram loss. Return now.
-            return pred_dict, label_dict, log_dict
+        # if self.train_confidence_only:
+        #     # Skip diffusion loss and distogram loss. Return now.
+        #     return pred_dict, label_dict, log_dict
 
         # Denoising: use permuted coords to generate noisy samples and perform denoising
         # x_denoised: [..., N_sample, N_atom, 3]
