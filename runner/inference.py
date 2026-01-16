@@ -343,7 +343,7 @@ def run() -> None:
         try:
             target_id = row.target_id
             sequence = row.sequence
-            for template_idx in range(configs.num_templates):
+            for template_idx in range(configs.n_templates_inf):
                 print()
                 run_ptx(
                     target_id=target_id,

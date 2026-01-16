@@ -195,8 +195,7 @@ The script configures and forwards the following parameters to the CLI:
 - `--rna_msa_dir`: Directory containing precomputed MSAs.
 - `--use_template`: Template mode (use `ca_precomputed` for prepared templates).
 - `--template_data`: Path to `.pt` template file converted from submission.csv.
-- `--template_idx`: Top-k template selection index:
-  - 0 -> top1, 1 -> top2, 2 -> top3, 3 -> top4, 4 -> top5
+- `--template_idx`: Top-k template selection index: 0 -> top1, 1 -> top2, 2 -> top3, 3 -> top4, 4 -> top5
 - `--num_templates`: Number of templates to use (e.g., `10`).
 - `--model.N_cycle`: Diffusion cycles (e.g., `10`).
 - `--sample_diffusion.N_sample`: Number of samples per seed (e.g., `1`).
@@ -207,6 +206,7 @@ The script configures and forwards the following parameters to the CLI:
 - `--sequences_csv`: Optional CSV with headers `sequence,target_id` for batched inference.
 - `--max_len`: Maximum length of the sequence. Longer sequences will be skipped during inference (default: `10000`).
 - `--logger`: Logger to use by the inference runner (default: `logging`). Supports `logging` and `print`.
+- `--n_templates_inf`: Number of inferences to do with different template combinations (default: `5`).
 
 ### Acceleration
 

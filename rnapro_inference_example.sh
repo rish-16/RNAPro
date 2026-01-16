@@ -55,10 +55,12 @@ python3 runner/inference.py \
     --triangle_multiplicative "cuequivariance" \
     --sequences_csv "${SEQUENCES_CSV}" \
     --max_len 5000 \
-    --logger "logging"
+    --logger "logging" \
+    --n_templates_inf 5
 
 # Notes:
 # --triangle_attention supports 'triattention', 'cuequivariance', 'deepspeed', 'torch'
 # --triangle_multiplicative supports 'cuequivariance', 'torch'
 # --max_len 1000: Sequences longer than max_len will be skipped to avoid oom
 # --logger handles logging of the inference runner, supports "logging", "print"
+# --n_templates_inf sets the number of inferences to do with different template combinations

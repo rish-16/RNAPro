@@ -254,7 +254,7 @@ def parse_configs(
         help="Logger to use during inference. Supports 'logging' and 'print'"
     )
     parser.add_argument(
-        "--num_templates",
+        "--n_templates_inf",
         type=int,
         default=5,
         required=False,
@@ -280,7 +280,7 @@ def parse_configs(
     args = parser.parse_args(arg_str.split())
     merged_configs.max_len = args.max_len
     merged_configs.logger = args.logger
-    merged_configs.num_templates = args.num_templates
+    merged_configs.n_templates_inf = args.n_templates_inf
 
     return merged_configs
 
