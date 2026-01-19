@@ -73,17 +73,65 @@ class RNADesignDataset(torch.utils.data.Dataset):
         self.max_length = max_length
         self.min_length = min_length
         
-        # Find all PDB files
+        if not self.data_dir.exists():
+            raise ValueError(f"Data directory does not exist: {data_dir}")
+        
+        # Find all PDB files (try multiple patterns)
         self.pdb_files = list(self.data_dir.glob("**/*.pdb"))
         if not self.pdb_files:
+            self.pdb_files = list(self.data_dir.glob("**/*.PDB"))
+        if not self.pdb_files:
+            self.pdb_files = list(self.data_dir.glob("**/*.ent"))
+        if not self.pdb_files:
             self.pdb_files = list(self.data_dir.glob("**/*.cif"))
+        if not self.pdb_files:
+            # Try non-recursive
+            self.pdb_files = list(self.data_dir.glob("*.pdb"))
         
         logger.info(f"Found {len(self.pdb_files)} structure files in {data_dir}")
+        
+        if len(self.pdb_files) == 0:
+            # List directory contents for debugging
+            contents = list(self.data_dir.iterdir())[:20]
+            logger.error(f"No PDB files found! Directory contents (first 20): {contents}")
+            raise ValueError(f"No PDB/CIF files found in {data_dir}. Check the directory path and file extensions.")
+        
+        # Pre-filter valid files to avoid empty dataset
+        self._prefilter_files()
+        
+    def _prefilter_files(self):
+        """Pre-filter files to ensure we have valid samples."""
+        valid_files = []
+        invalid_count = 0
+        
+        for pdb_path in self.pdb_files:
+            coords = self._extract_c4_coords(pdb_path, log_errors=False)
+            if coords is not None:
+                valid_files.append(pdb_path)
+            else:
+                invalid_count += 1
+        
+        logger.info(f"Pre-filtering: {len(valid_files)} valid, {invalid_count} invalid files")
+        
+        if len(valid_files) == 0:
+            # Sample a file and show detailed error
+            if self.pdb_files:
+                sample_file = self.pdb_files[0]
+                logger.error(f"Sample file: {sample_file}")
+                try:
+                    with open(sample_file, 'r') as f:
+                        lines = f.readlines()[:20]
+                        logger.error(f"First 20 lines: {''.join(lines)}")
+                except Exception as e:
+                    logger.error(f"Could not read sample file: {e}")
+            raise ValueError(f"No valid RNA structures with C4' atoms found in {self.data_dir}")
+        
+        self.pdb_files = valid_files
         
     def __len__(self) -> int:
         return len(self.pdb_files)
     
-    def _extract_c4_coords(self, pdb_path: Path) -> Optional[torch.Tensor]:
+    def _extract_c4_coords(self, pdb_path: Path, log_errors: bool = True) -> Optional[torch.Tensor]:
         """Extract C4' coordinates from PDB file."""
         coords = []
         
@@ -92,13 +140,15 @@ class RNADesignDataset(torch.utils.data.Dataset):
                 for line in f:
                     if line.startswith(("ATOM", "HETATM")):
                         atom_name = line[12:16].strip()
-                        if atom_name == "C4'":
+                        # Handle both C4' and C4* naming
+                        if atom_name in ("C4'", "C4*"):
                             x = float(line[30:38])
                             y = float(line[38:46])
                             z = float(line[46:54])
                             coords.append([x, y, z])
         except Exception as e:
-            logger.warning(f"Error reading {pdb_path}: {e}")
+            if log_errors:
+                logger.warning(f"Error reading {pdb_path}: {e}")
             return None
         
         if len(coords) < self.min_length or len(coords) > self.max_length:
@@ -111,7 +161,7 @@ class RNADesignDataset(torch.utils.data.Dataset):
         coords = self._extract_c4_coords(pdb_path)
         
         if coords is None:
-            # Return a random valid item instead
+            # Return a random valid item instead (shouldn't happen after prefiltering)
             return self.__getitem__(random.randint(0, len(self) - 1))
         
         n_residues = coords.shape[0]
