@@ -1,12 +1,33 @@
 # RNAProducer: De Novo RNA 3D Structure Design
 
-A flow matching-based generative model for RNA 3D structure design, fine-tuned from pretrained RNAPro.
+Fine-tune the pretrained RNAPro diffusion model for unconditional RNA structure generation.
 
 ---
 
-## Quick Start with RNAsolo Data
+## Overview
 
-### Step 1: Download RNAsolo Equivalence Classes
+RNAPro already contains a complete diffusion-based generative model:
+
+```
+RNAProDesign Model:
+├── Position Embeddings (learnable, replaces sequence features)
+├── PairformerStack (48 blocks, pretrained)
+└── DiffusionModule (EDM-style, pretrained)
+    ├── DiffusionConditioning (Fourier + RelPosEnc)
+    ├── AtomAttentionEncoder (3 blocks)
+    ├── DiffusionTransformer (24 blocks, 16 heads)
+    └── AtomAttentionDecoder (3 blocks)
+```
+
+**Training**: Add noise to C4' coordinates → Denoise → Weighted MSE loss
+
+**Inference**: Sample from noise using predictor-corrector sampling
+
+---
+
+## Quick Start
+
+### Step 1: Prepare Data
 
 ```bash
 # Create data directory
@@ -16,18 +37,18 @@ mkdir -p ./data/rnasolo
 # Visit: https://rnasolo.cs.put.poznan.pl/
 # Download: "Representative set" → "PDB format" → "All equivalence classes"
 
-# Or use wget (update URL as needed):
+# Or use wget:
 wget -O rnasolo_representatives.zip "https://rnasolo.cs.put.poznan.pl/download/..."
 unzip rnasolo_representatives.zip -d ./data/rnasolo/
 ```
 
-### Step 2: Verify Your Data
+### Step 2: Verify Data
 
 ```bash
 # Check structure count
 ls ./data/rnasolo/*.pdb | wc -l
 
-# Verify C4' atoms exist (should see ~1 per residue)
+# Verify C4' atoms exist
 grep " C4'" ./data/rnasolo/*.pdb | head -20
 
 # Check length distribution
@@ -36,189 +57,121 @@ for f in ./data/rnasolo/*.pdb; do
 done | sort -n | uniq -c | head -20
 ```
 
-### Step 3: Train the Model
+### Step 3: Train
 
-**Option A: Direct PDB Loading (Simplest)**
-
+**Single GPU:**
 ```bash
-torchrun --nproc_per_node=4 runner/train_design.py \
-    --project rnapro_design \
-    --run_name rnasolo_cfg \
-    --base_dir ./experiments \
-    --train_data_dir ./data/rnasolo \
-    --use_pdb_directly True \
-    --pdb_file_pattern "*.pdb" \
-    --atom_selection c4prime \
-    --design_mode cfg \
-    --cfg_drop_prob 0.1 \
-    --use_ss_constraints True \
-    --load_checkpoint_path ./release_data/protenix_models/protenix_base_default_v0.5.0.pt \
-    --load_strict False \
-    --load_params_only True \
-    --max_steps 50000 \
+python train_design_simple.py \
+    --data_dir ./data/rnasolo \
+    --checkpoint_path ./checkpoints/rnapro.pt \
+    --output_dir ./outputs/design \
     --batch_size 4 \
-    --lr 1e-4
+    --max_steps 50000 \
+    --cfg_drop_prob 0.1
 ```
 
-**Option B: Preprocess First (Faster Training)**
-
+**Multi-GPU:**
 ```bash
-# Step 3a: Preprocess to .pt files (extracts C4' coords + sequence)
-python preprocess/prepare_design_data.py \
-    --input_dir ./data/rnasolo \
-    --output_dir ./data/rnasolo_pt \
-    --min_length 10 \
-    --max_length 512
-
-# Step 3b: Train from preprocessed files
-torchrun --nproc_per_node=4 runner/train_design.py \
-    --project rnapro_design \
-    --run_name rnasolo_cfg \
-    --base_dir ./experiments \
-    --train_data_dir ./data/rnasolo_pt \
-    --use_pdb_directly False \
-    --design_mode cfg \
-    --cfg_drop_prob 0.1 \
-    --use_ss_constraints True \
-    --load_checkpoint_path ./release_data/protenix_models/protenix_base_default_v0.5.0.pt \
-    --load_strict False \
-    --load_params_only True \
-    --max_steps 50000 \
+torchrun --nproc_per_node=4 train_design_simple.py \
+    --data_dir ./data/rnasolo \
+    --checkpoint_path ./checkpoints/rnapro.pt \
+    --output_dir ./outputs/design \
     --batch_size 4 \
-    --lr 1e-4
+    --max_steps 50000 \
+    --cfg_drop_prob 0.1
 ```
 
 ### Step 4: Sample Structures
 
-```bash
-# Unconditional generation
-python runner/sample_design.py \
-    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
-    --output_dir ./outputs \
-    --length 50 \
-    --n_samples 10 \
-    --n_steps 100 \
-    --save_pdb
+```python
+import torch
+from rnapro.model.generator import InferenceNoiseScheduler, sample_diffusion
 
-# SS-conditioned with Classifier-Free Guidance
-python runner/sample_design.py \
-    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
-    --output_dir ./outputs \
-    --dot_bracket "((((....))))" \
-    --cfg_scale 1.5 \
-    --n_samples 10 \
-    --n_steps 100 \
-    --save_pdb
+# Load trained model
+checkpoint = torch.load('./outputs/design/checkpoint_50000.pt')
+model = ...  # Initialize and load model
 
-# Sequence + SS conditioned
-python runner/sample_design.py \
-    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
-    --output_dir ./outputs \
-    --sequence "GGCAUUAGCC" \
-    --dot_bracket "(((....)))" \
-    --cfg_scale 2.0 \
-    --n_samples 10 \
-    --save_pdb
+# Setup sampling
+scheduler = InferenceNoiseScheduler(sigma_data=16.0)
+noise_schedule = scheduler(N_step=200, device='cuda')
+
+# Sample (see train_design_simple.py for full example)
 ```
 
 ---
 
-## SLURM Cluster Workflow
+## Configuration
 
-```bash
-# 1. (Optional) Preprocess on CPU node
-sbatch slurm_preprocess.sh
-
-# 2. Train on multi-GPU node
-sbatch slurm_train_design.sh
-
-# 3. Sample structures
-sbatch slurm_sample_design.sh
-```
-
-Edit SLURM scripts to match your cluster:
-```bash
-#SBATCH --partition=your_gpu_partition
-#SBATCH --account=your_account
-#SBATCH --gpus-per-node=4
-#SBATCH --time=48:00:00
-```
-
----
-
-## Design Modes
-
-| Mode | Training | Inference | Use Case |
-|------|----------|-----------|----------|
-| `cfg` | Randomly drops conditioning (10%) | CFG interpolation | **Recommended** - supports both conditional and unconditional |
-| `conditional` | Always uses sequence/SS | Requires constraints | When you always want conditioning |
-| `unconditional` | Never uses sequence/SS | Length only | Pure unconditional generation |
-
-### Classifier-Free Guidance (CFG)
-
-CFG trains a single model that can do both conditional and unconditional generation:
-
-```bash
-# Training: 10% of batches have conditioning dropped
---design_mode cfg --cfg_drop_prob 0.1
-
-# Inference: interpolate between conditional and unconditional
---cfg_scale 1.5  # 1.0 = conditional only, >1.0 = stronger guidance
-```
-
----
-
-## Key Configuration
+### Training Arguments
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--design_mode` | cfg | Training mode: cfg, conditional, unconditional |
-| `--cfg_drop_prob` | 0.1 | Probability of dropping conditioning (CFG) |
-| `--cfg_scale` | 1.5 | Guidance scale at inference |
-| `--use_ss_constraints` | True | Detect base pairs from coordinates |
-| `--batch_size` | 4 | Per-GPU batch size |
+| `--data_dir` | required | Directory with PDB files |
+| `--checkpoint_path` | None | Pretrained RNAPro checkpoint |
+| `--output_dir` | `outputs/design` | Output directory |
+| `--batch_size` | 4 | Batch size per GPU |
+| `--n_sample` | 4 | Diffusion samples per structure |
 | `--lr` | 1e-4 | Learning rate |
+| `--weight_decay` | 0.01 | AdamW weight decay |
+| `--grad_clip` | 1.0 | Gradient clipping |
 | `--max_steps` | 50000 | Training steps |
-| `--n_steps` | 50 | Sampling integration steps |
-| `--freeze_pairformer` | False | Freeze pretrained pairformer |
-| `--freeze_diffusion` | False | Freeze pretrained diffusion module |
+| `--cfg_drop_prob` | 0.1 | CFG dropout probability |
+| `--max_length` | 512 | Maximum sequence length |
+| `--min_length` | 10 | Minimum sequence length |
+| `--seed` | 42 | Random seed |
+| `--num_workers` | 4 | DataLoader workers |
+| `--log_every` | 100 | Logging frequency |
+| `--save_every` | 5000 | Checkpoint frequency |
 
----
+### Classifier-Free Guidance (CFG)
 
-## What Gets Loaded from Pretrained RNAPro
+CFG enables the model to do both conditional and unconditional generation:
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| `pairformer_stack` | ✅ Loaded | Core representation learning |
-| `diffusion_module` | ✅ Loaded | Structure generation |
-| `relative_position_encoding` | ✅ Loaded | Positional info |
-| `condition_embedder` | ❌ Random init | New module for design |
+- **Training**: Randomly drop conditioning with probability `cfg_drop_prob`
+- **Inference**: Interpolate between conditional and unconditional predictions
 
----
-
-## Data Pipeline
-
-```
-RNAsolo PDB → parse_pdb() → (C4' coords, sequence) → detect_base_pairs()
-                                                              ↓
-                                                       ss_constraints
-                                                              ↓
-                              StructureConditionEmbedder(sequence, pair_compat, ss_constraints)
-                                                              ↓
-                                                    Pairformer (pretrained)
-                                                              ↓
-                                                    Flow Matching Training
+```bash
+# Training with CFG
+--cfg_drop_prob 0.1  # 10% of batches have conditioning dropped
 ```
 
 ---
 
-## Wandb Metrics
+## How It Works
 
-Training automatically logs:
-- **Loss**: `total_loss`, `flow_loss`, `bond_loss`, `clash_loss`
-- **Flow Matching**: Error by timestep (early/mid/late)
-- **Optimization**: Learning rate, gradient norm
-- **Validation**: RMSD, coordinate error, GDT-like metrics
+### Training Pipeline
+
+```
+PDB files → Extract C4' coordinates → RNADesignDataset
+                                            ↓
+                               Position Embeddings (learnable)
+                                            ↓
+                               PairformerStack (pretrained)
+                                            ↓
+                    sample_diffusion_training() with EDM noise
+                                            ↓
+                               DiffusionModule (pretrained)
+                                            ↓
+                               Weighted MSE Loss (EDM weighting)
+```
+
+### Key Components
+
+| Component | Source | Status |
+|-----------|--------|--------|
+| `PairformerStack` | Pretrained RNAPro | ✅ Loaded & fine-tuned |
+| `DiffusionModule` | Pretrained RNAPro | ✅ Loaded & fine-tuned |
+| `Position Embedding` | New | Randomly initialized |
+| `Linear layers` | New | Randomly initialized |
+
+### EDM Diffusion Training
+
+The training uses Elucidated Diffusion Models (EDM) approach:
+
+1. **Sample noise level**: `σ ~ exp(N(-1.2, 1.5)) × σ_data`
+2. **Add noise**: `x_noisy = x_gt + σ × ε`
+3. **Denoise**: `x_denoised = DiffusionModule(x_noisy, σ, s_trunk, z_trunk)`
+4. **Loss**: Weighted MSE with EDM weighting `w(σ) = (σ² + σ_data²) / (σ × σ_data)²`
 
 ---
 
@@ -226,21 +179,16 @@ Training automatically logs:
 
 | Task | GPUs | VRAM |
 |------|------|------|
-| Training | 4× A100 | ~40GB each |
+| Training | 1-4× GPU | ~20-40GB each |
 | Sampling | 1× GPU | ~16GB |
 
 ---
 
 ## Common Issues
 
-**OOM during training:**
+**Out of Memory:**
 ```bash
---batch_size 2 --diffusion_batch_size 8
-```
-
-**DDP errors with frozen params:**
-```bash
---find_unused_parameters True
+--batch_size 2 --n_sample 2
 ```
 
 **Slow data loading:**
@@ -249,4 +197,46 @@ Training automatically logs:
 ```
 
 **No C4' atoms found:**
-Check that your PDB files contain RNA (not protein) with standard atom names.
+- Ensure PDB files contain RNA (not protein)
+- Check for standard atom naming (`C4'` not `C4*`)
+
+**Distributed training issues:**
+```bash
+# Set environment variables
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+```
+
+---
+
+## Example SLURM Script
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=rnapro_design
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=4
+#SBATCH --time=48:00:00
+#SBATCH --output=logs/%j.out
+
+module load cuda/12.1
+
+torchrun --nproc_per_node=4 train_design_simple.py \
+    --data_dir ./data/rnasolo \
+    --checkpoint_path ./checkpoints/rnapro.pt \
+    --output_dir ./outputs/design_${SLURM_JOB_ID} \
+    --batch_size 4 \
+    --max_steps 50000
+```
+
+---
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `train_design_simple.py` | Main training script |
+| `rnapro/model/generator.py` | Diffusion sampling functions |
+| `rnapro/model/modules/diffusion.py` | DiffusionModule |
+| `rnapro/model/modules/pairformer.py` | PairformerStack |

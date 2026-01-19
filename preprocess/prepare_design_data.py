@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Preprocessing script to convert PDB/CIF files to .pt format for RNAProDesign training.
+Preprocessing script to convert PDB/CIF files to .pt format for RNA design training.
 
 Usage:
     python preprocess/prepare_design_data.py \
@@ -12,7 +12,7 @@ Usage:
         --file_format pdb
 
 This script extracts C4' coordinates from RNA structures and saves them
-as PyTorch tensors ready for training.
+as PyTorch tensors ready for training with train_design_simple.py.
 """
 
 import argparse
@@ -303,7 +303,7 @@ def process_directory(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert PDB/CIF files to .pt format for RNAProDesign training."
+        description="Convert PDB/CIF files to .pt format for RNA design training."
     )
     parser.add_argument(
         "--input_dir", "-i",

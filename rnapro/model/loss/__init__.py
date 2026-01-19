@@ -3,20 +3,9 @@
 
 """
 Loss functions for RNAPro models.
+
+Note: The main loss functions (SmoothLDDTLoss, DiffusionLoss, etc.) 
+are defined in loss.py at the model level.
 """
 
-from rnapro.model.loss.design_loss import (
-    FlowMatchingLoss,
-    VelocityLoss,
-    StructuralConsistencyLoss,
-    RNAProDesignLoss,
-    compute_design_metrics,
-)
-
-__all__ = [
-    "FlowMatchingLoss",
-    "VelocityLoss", 
-    "StructuralConsistencyLoss",
-    "RNAProDesignLoss",
-    "compute_design_metrics",
-]
+__all__ = []

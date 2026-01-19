@@ -14,17 +14,9 @@
 # limitations under the License.
 """
 __init__.py for generator subpackage.
-"""
-from rnapro.model.generator.flow_matching import (
-    FlowMatchingScheduler,
-    FlowMatchingInferenceSampler,
-    sample_flow_matching_training,
-    flow_matching_loss,
-)
 
-__all__ = [
-    "FlowMatchingScheduler",
-    "FlowMatchingInferenceSampler",
-    "sample_flow_matching_training",
-    "flow_matching_loss",
-]
+Note: The diffusion-based generation is handled by the main RNAPro model
+via sample_diffusion() and sample_diffusion_training() in generator.py
+"""
+
+__all__ = []
