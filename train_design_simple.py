@@ -454,6 +454,26 @@ class RNAProDesignSimple(nn.Module):
         )  # [B, N, N, c_z]
         
         # Token-level features for DiffusionModule
+        # Note: AtomAttentionEncoder expects:
+        #   - ref_element: [B, N, 128] one-hot (or will be embedded)
+        #   - ref_atom_name_chars: [B, N, 4, 64] one-hot (4 chars x 64 classes)
+        #   - ref_mask: [B, N, 1] or [B, N]
+        
+        # For C4' atoms: element is Carbon (atomic number 6)
+        # ref_element should be one-hot with 128 classes
+        ref_element = torch.zeros(B, N, 128, device=device, dtype=dtype)
+        ref_element[..., 6] = 1.0  # Carbon = element 6
+        
+        # ref_atom_name_chars: "C4'" = ['C', '4', "'", ' '] encoded as one-hot
+        # Character encoding: assume ASCII-based, ' '=32, '\'=39, '4'=52, 'C'=67
+        # But simpler: use indices 0-63 for common chars
+        ref_atom_name_chars = torch.zeros(B, N, 4, 64, device=device, dtype=dtype)
+        # Just set a default encoding (the model will learn from this)
+        ref_atom_name_chars[..., 0, 3] = 1.0  # 'C'
+        ref_atom_name_chars[..., 1, 4] = 1.0  # '4'
+        ref_atom_name_chars[..., 2, 7] = 1.0  # "'"
+        ref_atom_name_chars[..., 3, 0] = 1.0  # padding/space
+        
         input_feature_dict = {
             # Token indices
             "residue_index": positions,
@@ -467,8 +487,8 @@ class RNAProDesignSimple(nn.Module):
             "ref_charge": torch.zeros(B, N, device=device, dtype=dtype),
             "ref_mask": mask,
             "ref_space_uid": torch.zeros(B, N, device=device, dtype=torch.long),
-            "ref_element": torch.ones(B, N, device=device, dtype=torch.long),
-            "ref_atom_name_chars": torch.zeros(B, N, 4, device=device, dtype=torch.long),
+            "ref_element": ref_element,  # [B, N, 128] one-hot
+            "ref_atom_name_chars": ref_atom_name_chars.reshape(B, N, 4 * 64),  # [B, N, 256]
         }
         
         label_dict = {
