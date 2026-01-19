@@ -49,7 +49,6 @@ from rnapro.utils.lr_scheduler import get_lr_scheduler
 from rnapro.utils.metrics import SimpleMetricAggregator
 from rnapro.utils.seed import seed_everything
 from rnapro.utils.torch_utils import to_device
-from rnapro.utils.training import get_optimizer
 from runner.ema import EMAWrapper
 
 # Disable WANDB's console output capture
@@ -291,10 +290,12 @@ class DesignTrainer:
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.print(f"Optimizing {len(trainable_params)} parameter groups")
         
-        self.optimizer = get_optimizer(
-            configs=self.configs,
-            model=self.model,
-            param_names=[],
+        # Create optimizer directly (simpler than get_optimizer for design training)
+        self.optimizer = torch.optim.AdamW(
+            trainable_params,
+            lr=self.configs.lr,
+            betas=(self.configs.adam.beta1, self.configs.adam.beta2),
+            weight_decay=self.configs.adam.weight_decay,
         )
         
         # Learning rate scheduler
