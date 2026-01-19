@@ -232,9 +232,9 @@ model_configs = {
             "c_atom": GlobalConfigValue("c_atom"),
             "c_atompair": GlobalConfigValue("c_atompair"),
             "c_token": GlobalConfigValue("c_token"),
-            "n_blocks": 3,
-            "n_heads": 16,
-            "c_noise_embedding": 256,
+            "atom_encoder": {"n_blocks": 3, "n_heads": 4},
+            "transformer": {"n_blocks": 24, "n_heads": 16, "drop_path_rate": 0},
+            "atom_decoder": {"n_blocks": 3, "n_heads": 4},
             "blocks_per_ckpt": GlobalConfigValue("blocks_per_ckpt"),
         },
         
