@@ -340,6 +340,86 @@ class RNAProDesign(nn.Module):
         
         return info
     
+    def create_diffusion_input_features(
+        self,
+        design_conditions: dict[str, Any],
+        n_atoms: int,
+    ) -> dict[str, Any]:
+        """
+        Create input features for the diffusion module.
+        
+        The DiffusionModule expects certain atom-level features that
+        are normally provided by the RNAPro data pipeline. For design,
+        we create simplified versions.
+        
+        Args:
+            design_conditions: Original design conditions.
+            n_atoms: Number of atoms (= number of tokens for C4' representation).
+            
+        Returns:
+            input_feature_dict: Features for diffusion module.
+        """
+        device = design_conditions["device"]
+        dtype = design_conditions["dtype"]
+        batch_size = design_conditions.get("batch_size", 1)
+        
+        # For C4' representation: n_atoms = n_tokens = n_residues
+        n_tokens = n_atoms
+        
+        # Create input feature dict with required keys
+        input_feature_dict = {}
+        
+        # ref_pos: Reference positions (initially zeros, will be updated)
+        # Shape: [batch, N_atom, 3]
+        input_feature_dict["ref_pos"] = torch.zeros(
+            batch_size, n_atoms, 3, device=device, dtype=dtype
+        )
+        
+        # ref_charge: Reference charge (zeros for RNA)
+        # Shape: [batch, N_atom]
+        input_feature_dict["ref_charge"] = torch.zeros(
+            batch_size, n_atoms, device=device, dtype=dtype
+        )
+        
+        # ref_mask: Reference mask (all ones for valid atoms)
+        # Shape: [batch, N_atom]
+        input_feature_dict["ref_mask"] = design_conditions.get(
+            "coordinate_mask",
+            torch.ones(batch_size, n_atoms, device=device, dtype=dtype)
+        )
+        
+        # ref_space_uid: Space UID (all zeros - single chain)
+        # Shape: [batch, N_atom]
+        input_feature_dict["ref_space_uid"] = torch.zeros(
+            batch_size, n_atoms, device=device, dtype=torch.long
+        )
+        
+        # atom_to_token_idx: Mapping from atoms to tokens
+        # For C4' representation, atom i -> token i (identity)
+        # Shape: [batch, N_atom]
+        input_feature_dict["atom_to_token_idx"] = torch.arange(
+            n_atoms, device=device
+        ).unsqueeze(0).expand(batch_size, -1)
+        
+        # ref_element: Element type (all same for C4')
+        # Shape: [batch, N_atom]
+        input_feature_dict["ref_element"] = torch.ones(
+            batch_size, n_atoms, device=device, dtype=torch.long
+        )
+        
+        # ref_atom_name_chars: Atom name characters (dummy)
+        # Shape: [batch, N_atom, 4] (4 chars per atom name)
+        input_feature_dict["ref_atom_name_chars"] = torch.zeros(
+            batch_size, n_atoms, 4, device=device, dtype=torch.long
+        )
+        
+        # Copy over any additional features from design_conditions
+        for key in ["asym_id", "entity_id", "sym_id"]:
+            if key in design_conditions:
+                input_feature_dict[key] = design_conditions[key]
+        
+        return input_feature_dict
+    
     def get_pairformer_output(
         self,
         design_conditions: dict[str, Any],
@@ -505,11 +585,20 @@ class RNAProDesign(nn.Module):
         N_sample = self.diffusion_batch_size
         diffusion_chunk_size = self.configs.get("diffusion_chunk_size")
         
+        # Get number of atoms from label_dict
+        n_atoms = label_dict["coordinate"].shape[-2]
+        
+        # Create input features for diffusion module
+        input_feature_dict = self.create_diffusion_input_features(
+            design_conditions=design_conditions,
+            n_atoms=n_atoms,
+        )
+        
         x_t, x_pred, v_target, t = sample_flow_matching_training(
             flow_scheduler=self.flow_scheduler,
             denoise_net=self.diffusion_module,
             label_dict=label_dict,
-            input_feature_dict=design_conditions,
+            input_feature_dict=input_feature_dict,
             s_inputs=s_inputs,
             s_trunk=s,
             z_trunk=z,

@@ -448,12 +448,6 @@ def sample_flow_matching_training(
     dtype = coords.dtype
     n_atoms = coords.shape[-2]
     
-    # Debug: print shapes to understand the issue
-    print(f"[DEBUG] coordinate shape: {coords.shape}")
-    print(f"[DEBUG] batch_shape: {batch_shape}, n_atoms: {n_atoms}")
-    if "coordinate_mask" in label_dict:
-        print(f"[DEBUG] coordinate_mask shape: {label_dict['coordinate_mask'].shape}")
-    
     # For now, skip mask to avoid shape issues - just use None (centers without mask)
     coord_mask = None
     
