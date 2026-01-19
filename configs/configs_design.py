@@ -218,9 +218,6 @@ model_configs = {
             "n_heads": 16,
             "c_z": GlobalConfigValue("c_z"),
             "c_s": GlobalConfigValue("c_s"),
-            "c_hidden_mul": 128,
-            "c_hidden_pair_att": 32,
-            "no_heads_pair": 4,
             "dropout": 0.0,  # Less dropout for design
             "n_blocks": GlobalConfigValue("n_blocks"),
             "blocks_per_ckpt": GlobalConfigValue("blocks_per_ckpt"),

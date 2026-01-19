@@ -142,8 +142,8 @@ class DesignTrainer:
         
         self.init_env()
         self.init_basics()
-        self.init_log()
         self.init_model()
+        self.init_log()
         self.init_loss()
         self.init_data()
         self.try_load_checkpoint()
