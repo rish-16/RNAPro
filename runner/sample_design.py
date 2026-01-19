@@ -200,6 +200,106 @@ def generate_with_ss_constraint(
     return coordinates
 
 
+def generate_with_cfg(
+    model: RNAProDesign,
+    length: int,
+    dot_bracket: Optional[str] = None,
+    sequence: Optional[str] = None,
+    n_samples: int = 5,
+    n_steps: int = 50,
+    cfg_scale: float = 1.5,
+    device: torch.device = torch.device("cuda"),
+    seed: Optional[int] = None,
+) -> torch.Tensor:
+    """
+    Generate RNA structures using Classifier-Free Guidance.
+    
+    CFG interpolates between conditional and unconditional predictions:
+    pred = uncond + cfg_scale * (cond - uncond)
+    
+    - cfg_scale = 1.0: Pure conditional (same as generate_with_ss_constraint)
+    - cfg_scale > 1.0: Stronger conditioning (higher fidelity to constraints)
+    - cfg_scale < 1.0: More diversity, less adherence to constraints
+    - cfg_scale = 0.0: Pure unconditional
+    
+    Args:
+        model: Trained RNAProDesign model.
+        length: Sequence length (used if dot_bracket not provided).
+        dot_bracket: Secondary structure in dot-bracket notation (optional).
+        sequence: RNA sequence string (optional, e.g., "AUGCAUGC").
+        n_samples: Number of structures to generate.
+        n_steps: Number of integration steps.
+        cfg_scale: Guidance scale.
+        device: Target device.
+        seed: Random seed (optional).
+        
+    Returns:
+        coordinates: [n_samples, N_atom, 3] generated coordinates.
+    """
+    if seed is not None:
+        seed_everything(seed)
+    
+    # Determine length from dot_bracket if provided
+    if dot_bracket is not None:
+        length = len(dot_bracket)
+    
+    logger.info(f"Generating {n_samples} structures with CFG (scale={cfg_scale})")
+    if dot_bracket:
+        logger.info(f"  SS constraint: {dot_bracket}")
+    if sequence:
+        logger.info(f"  Sequence: {sequence[:20]}..." if len(sequence) > 20 else f"  Sequence: {sequence}")
+    
+    # Build design conditions
+    ss_matrix = None
+    if dot_bracket is not None:
+        ss_matrix = SecondaryStructureConstraintEncoder.dot_bracket_to_matrix(
+            dot_bracket, device
+        )
+    
+    # Convert sequence to indices
+    seq_tensor = None
+    pair_compat = None
+    if sequence is not None:
+        nuc_to_idx = {"A": 0, "U": 1, "G": 2, "C": 3, "N": 4, "T": 1}  # T->U
+        seq_list = [nuc_to_idx.get(c.upper(), 4) for c in sequence]
+        seq_tensor = torch.tensor(seq_list, dtype=torch.long, device=device)
+        
+        # Compute pair compatibility
+        valid_pairs = {(0, 1), (1, 0), (2, 3), (3, 2), (2, 1), (1, 2)}  # A-U, G-C, G-U
+        n = len(sequence)
+        pair_compat = torch.zeros(n, n, device=device)
+        for i in range(n):
+            for j in range(n):
+                if (seq_list[i], seq_list[j]) in valid_pairs:
+                    pair_compat[i, j] = 1.0
+    
+    # Create design conditions
+    design_conditions = create_design_conditions(
+        length=length,
+        n_atoms=length,
+        device=device,
+        dtype=torch.float32,
+        batch_size=1,
+        sequence=seq_tensor,
+        pair_compat=pair_compat,
+        ss_constraints=ss_matrix,
+    )
+    
+    # Generate with CFG
+    with torch.no_grad():
+        coordinates = model.sample_with_cfg(
+            design_conditions=design_conditions,
+            n_samples=n_samples,
+            n_steps=n_steps,
+            cfg_scale=cfg_scale,
+        )
+    
+    coordinates = coordinates.squeeze(0)
+    
+    logger.info(f"Generated coordinates shape: {coordinates.shape}")
+    return coordinates
+
+
 def generate_with_distance_constraint(
     model: RNAProDesign,
     length: int,
@@ -337,6 +437,18 @@ def main():
         help="Secondary structure constraint in dot-bracket notation"
     )
     parser.add_argument(
+        "--sequence", type=str, default=None,
+        help="RNA sequence (e.g., 'AUGCAUGC')"
+    )
+    parser.add_argument(
+        "--cfg_scale", type=float, default=1.5,
+        help="Classifier-Free Guidance scale (1.0=conditional, >1.0=stronger guidance)"
+    )
+    parser.add_argument(
+        "--use_cfg", action="store_true",
+        help="Use Classifier-Free Guidance for sampling"
+    )
+    parser.add_argument(
         "--seed", type=int, default=42,
         help="Random seed"
     )
@@ -359,8 +471,22 @@ def main():
     model, configs = load_model(args.checkpoint, device)
     
     # Generate structures
-    if args.dot_bracket is not None:
-        # Constraint-conditioned generation
+    if args.use_cfg or args.cfg_scale != 1.0:
+        # Use Classifier-Free Guidance
+        coordinates = generate_with_cfg(
+            model=model,
+            length=args.length,
+            dot_bracket=args.dot_bracket,
+            sequence=args.sequence,
+            n_samples=args.n_samples,
+            n_steps=args.n_steps,
+            cfg_scale=args.cfg_scale,
+            device=device,
+            seed=args.seed,
+        )
+        prefix = f"cfg_{args.cfg_scale}"
+    elif args.dot_bracket is not None:
+        # Constraint-conditioned generation (without CFG)
         coordinates = generate_with_ss_constraint(
             model=model,
             dot_bracket=args.dot_bracket,

@@ -38,23 +38,38 @@ RNA_RESIDUES = {
     "A", "U", "G", "C", "I",  # Including inosine
 }
 
+# Nucleotide mapping
+NUC_TO_IDX = {"A": 0, "U": 1, "G": 2, "C": 3, "N": 4}  # N = unknown
+
+# Map residue names to single-letter nucleotide
+RESNAME_TO_NUC = {
+    "A": "A", "ADE": "A", "RA": "A", "DA": "A",
+    "U": "U", "URA": "U", "RU": "U", "URI": "U",
+    "G": "G", "GUA": "G", "RG": "G", "DG": "G",
+    "C": "C", "CYT": "C", "RC": "C", "DC": "C",
+    "T": "U", "THY": "U", "DT": "U",  # Treat T as U
+    "I": "N",  # Inosine -> unknown
+}
+
 # Atom names for C4' selection
 C4_PRIME_ATOMS = {"C4'", "C4*"}
 
 
-def parse_pdb_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
+def parse_pdb_c4prime(filepath: str) -> Tuple[torch.Tensor, torch.Tensor, int, List[str]]:
     """
-    Parse PDB file and extract C4' coordinates.
+    Parse PDB file and extract C4' coordinates and sequence.
     
     Args:
         filepath: Path to PDB file.
         
     Returns:
         coordinates: [N_residues, 3] C4' coordinates.
+        sequence: [N_residues] nucleotide indices (0=A, 1=U, 2=G, 3=C, 4=N).
         n_residues: Number of residues.
         chain_ids: List of chain IDs.
     """
     coordinates = []
+    sequence = []
     residue_info = []  # (chain_id, res_id) to track unique residues
     
     with open(filepath, "r") as f:
@@ -89,6 +104,11 @@ def parse_pdb_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
                 y = float(line[38:46])
                 z = float(line[46:54])
                 coordinates.append([x, y, z])
+                
+                # Get nucleotide character
+                nuc_char = RESNAME_TO_NUC.get(res_name, "N")
+                sequence.append(NUC_TO_IDX[nuc_char])
+                
                 residue_info.append(res_key)
             except ValueError:
                 continue
@@ -97,18 +117,24 @@ def parse_pdb_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
         raise ValueError(f"No C4' atoms found in {filepath}")
     
     chain_ids = list(set(r[0] for r in residue_info))
-    return torch.tensor(coordinates, dtype=torch.float32), len(coordinates), chain_ids
+    return (
+        torch.tensor(coordinates, dtype=torch.float32),
+        torch.tensor(sequence, dtype=torch.long),
+        len(coordinates),
+        chain_ids,
+    )
 
 
-def parse_cif_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
+def parse_cif_c4prime(filepath: str) -> Tuple[torch.Tensor, torch.Tensor, int, List[str]]:
     """
-    Parse mmCIF file and extract C4' coordinates.
+    Parse mmCIF file and extract C4' coordinates and sequence.
     
     Args:
         filepath: Path to CIF file.
         
     Returns:
         coordinates: [N_residues, 3] C4' coordinates.
+        sequence: [N_residues] nucleotide indices (0=A, 1=U, 2=G, 3=C, 4=N).
         n_residues: Number of residues.
         chain_ids: List of chain IDs.
     """
@@ -121,6 +147,7 @@ def parse_cif_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
     structure = parser.get_structure("rna", filepath)
     
     coordinates = []
+    sequence = []
     residue_info = []
     
     for model in structure:
@@ -137,6 +164,11 @@ def parse_cif_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
                     if atom.get_name() in C4_PRIME_ATOMS:
                         coord = atom.get_coord()
                         coordinates.append(coord.tolist())
+                        
+                        # Get nucleotide character
+                        nuc_char = RESNAME_TO_NUC.get(res_name, "N")
+                        sequence.append(NUC_TO_IDX[nuc_char])
+                        
                         residue_info.append((chain.id, residue.id[1]))
                         break  # Only one C4' per residue
     
@@ -144,7 +176,12 @@ def parse_cif_c4prime(filepath: str) -> Tuple[torch.Tensor, int, List[str]]:
         raise ValueError(f"No C4' atoms found in {filepath}")
     
     chain_ids = list(set(r[0] for r in residue_info))
-    return torch.tensor(coordinates, dtype=torch.float32), len(coordinates), chain_ids
+    return (
+        torch.tensor(coordinates, dtype=torch.float32),
+        torch.tensor(sequence, dtype=torch.long),
+        len(coordinates),
+        chain_ids,
+    )
 
 
 def center_coordinates(coords: torch.Tensor) -> torch.Tensor:
@@ -170,9 +207,9 @@ def process_structure(
     ext = Path(filepath).suffix.lower()
     
     if ext in [".pdb", ".ent"]:
-        coords, n_residues, chains = parse_pdb_c4prime(filepath)
+        coords, sequence, n_residues, chains = parse_pdb_c4prime(filepath)
     elif ext in [".cif", ".mmcif"]:
-        coords, n_residues, chains = parse_cif_c4prime(filepath)
+        coords, sequence, n_residues, chains = parse_cif_c4prime(filepath)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
     
@@ -181,10 +218,11 @@ def process_structure(
     
     # Create output dictionary
     data = {
-        "coordinates": coords,  # [N, 3]
+        "coordinates": coords,        # [N, 3]
+        "sequence": sequence,          # [N] nucleotide indices
         "coordinate_mask": torch.ones(n_residues),  # [N]
         "n_tokens": n_residues,
-        "n_atoms": n_residues,  # Same for C4' level
+        "n_atoms": n_residues,         # Same for C4' level
         "n_chains": len(chains),
     }
     

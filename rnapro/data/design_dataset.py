@@ -16,8 +16,8 @@
 """
 Dataset classes for RNA de novo structure design.
 
-These datasets provide structure-only data without sequence information,
-suitable for training unconditional or constraint-conditioned generative models.
+These datasets provide structure data with sequence and secondary structure
+information for training generative models with proper pair representations.
 """
 
 import os
@@ -34,6 +34,115 @@ from rnapro.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Nucleotide mapping
+NUC_TO_IDX = {"A": 0, "U": 1, "G": 2, "C": 3, "N": 4}  # N = unknown
+IDX_TO_NUC = {0: "A", 1: "U", 2: "G", 3: "C", 4: "N"}
+
+# Standard residue name mapping to single letter
+RESNAME_TO_NUC = {
+    "A": "A", "ADE": "A", "RA": "A", "DA": "A",
+    "U": "U", "URA": "U", "RU": "U", "URI": "U",
+    "G": "G", "GUA": "G", "RG": "G", "DG": "G",
+    "C": "C", "CYT": "C", "RC": "C", "DC": "C",
+    "T": "U", "THY": "U", "DT": "U",  # Treat T as U for RNA
+}
+
+# Secondary structure constraint classes
+SS_UNPAIRED = 0    # Definitely unpaired
+SS_PAIRED = 1      # Definitely paired (with another residue)
+SS_ANY = 2         # Unknown/any
+SS_MASK = 3        # Masked (for training)
+
+# Watson-Crick and wobble pair compatibility
+# (A-U, U-A, G-C, C-G, G-U, U-G)
+VALID_PAIRS = {
+    (0, 1), (1, 0),  # A-U, U-A
+    (2, 3), (3, 2),  # G-C, C-G
+    (2, 1), (1, 2),  # G-U, U-G (wobble)
+}
+
+
+def detect_base_pairs_from_coords(
+    c4_coords: torch.Tensor,
+    sequence: torch.Tensor,
+    max_pair_dist: float = 25.0,
+    min_seq_sep: int = 4,
+) -> torch.Tensor:
+    """
+    Detect base pairs from C4' coordinates using distance heuristics.
+    
+    For proper base pairing, the C4'-C4' distance is typically:
+    - Watson-Crick pairs: ~15-18 Å
+    - Wobble pairs: ~16-19 Å
+    
+    We use a relaxed threshold and filter by sequence compatibility.
+    
+    Args:
+        c4_coords: [N, 3] C4' atom coordinates.
+        sequence: [N] nucleotide indices (0=A, 1=U, 2=G, 3=C, 4=N).
+        max_pair_dist: Maximum C4'-C4' distance to consider.
+        min_seq_sep: Minimum sequence separation for valid pairs.
+        
+    Returns:
+        ss_matrix: [N, N] secondary structure matrix.
+            Values: 0=unpaired, 1=paired, 2=any/unknown.
+    """
+    n = c4_coords.shape[0]
+    
+    # Compute pairwise distances
+    diff = c4_coords[:, None, :] - c4_coords[None, :, :]  # [N, N, 3]
+    distances = torch.sqrt((diff ** 2).sum(dim=-1) + 1e-8)  # [N, N]
+    
+    # Initialize with "any" (unknown)
+    ss_matrix = torch.full((n, n), SS_ANY, dtype=torch.long)
+    
+    # Set diagonal to unpaired (residue can't pair with itself)
+    ss_matrix.fill_diagonal_(SS_UNPAIRED)
+    
+    # Find potential pairs
+    for i in range(n):
+        for j in range(i + min_seq_sep, n):
+            dist = distances[i, j].item()
+            
+            # Check distance criterion (typical C4'-C4' for base pairs)
+            if 12.0 <= dist <= max_pair_dist:
+                # Check sequence compatibility
+                nuc_i = sequence[i].item()
+                nuc_j = sequence[j].item()
+                
+                if (nuc_i, nuc_j) in VALID_PAIRS:
+                    # Mark as paired
+                    ss_matrix[i, j] = SS_PAIRED
+                    ss_matrix[j, i] = SS_PAIRED
+    
+    return ss_matrix
+
+
+def compute_pair_compatibility_matrix(sequence: torch.Tensor) -> torch.Tensor:
+    """
+    Compute which pairs of residues CAN form base pairs based on sequence.
+    
+    This encodes Watson-Crick (A-U, G-C) and wobble (G-U) pairing rules.
+    
+    Args:
+        sequence: [N] nucleotide indices.
+        
+    Returns:
+        compat_matrix: [N, N] binary compatibility matrix.
+    """
+    n = sequence.shape[0]
+    compat = torch.zeros(n, n, dtype=torch.float32)
+    
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                nuc_i = sequence[i].item()
+                nuc_j = sequence[j].item()
+                if (nuc_i, nuc_j) in VALID_PAIRS:
+                    compat[i, j] = 1.0
+    
+    return compat
+
 
 class RNADesignDataset(Dataset):
     """
@@ -41,10 +150,9 @@ class RNADesignDataset(Dataset):
     
     Each sample contains:
     - Target 3D coordinates (C4' atoms only, one per residue)
-    - Design constraints (optional)
+    - Sequence information (nucleotide identity)
+    - Secondary structure constraints (detected from coordinates)
     - Structural metadata (lengths, masks)
-    
-    NO sequence information is provided - this is purely structure-based.
     
     C4' Level Representation:
     - n_atoms == n_tokens == n_residues
@@ -141,14 +249,23 @@ class RNADesignDataset(Dataset):
         n_atoms = coordinates.shape[0]
         n_tokens = data.get("n_tokens", n_atoms)  # Default: one atom per token
         
+        # Extract sequence (nucleotide indices)
+        if "sequence" in data:
+            sequence = data["sequence"]  # [N] tensor of indices
+        else:
+            # Default to unknown nucleotides if not provided
+            sequence = torch.full((n_tokens,), NUC_TO_IDX["N"], dtype=torch.long)
+        
         # Augment coordinates (random rotation/translation)
         if self.augment_coords and self.training:
             coordinates = self._augment_coordinates(coordinates, coordinate_mask)
         
-        # Build design conditions (NO sequence info)
+        # Build design conditions with sequence info
         design_conditions = {
             "length": n_tokens,
             "n_atoms": n_atoms,
+            # Sequence information
+            "sequence": sequence,  # [N] nucleotide indices (0=A, 1=U, 2=G, 3=C, 4=N)
             # Positional information
             "asym_id": torch.zeros(n_tokens, dtype=torch.long),
             "residue_index": torch.arange(n_tokens),
@@ -169,9 +286,18 @@ class RNADesignDataset(Dataset):
             token_bonds[i + 1, i] = 1.0
         design_conditions["token_bonds"] = token_bonds
         
-        # Add optional constraints
-        if self.use_ss_constraints and "ss_matrix" in data:
-            design_conditions["ss_constraints"] = data["ss_matrix"]
+        # Add base pair compatibility (from sequence)
+        design_conditions["pair_compat"] = compute_pair_compatibility_matrix(sequence)
+        
+        # Compute or load secondary structure constraints
+        if self.use_ss_constraints:
+            if "ss_matrix" in data:
+                design_conditions["ss_constraints"] = data["ss_matrix"]
+            else:
+                # Detect base pairs from 3D coordinates
+                design_conditions["ss_constraints"] = detect_base_pairs_from_coords(
+                    coordinates, sequence
+                )
         
         if self.use_distance_constraints:
             # Compute distance constraints from coordinates
@@ -323,11 +449,12 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
         pdb_path = self.structure_files[idx]
         
         try:
-            coordinates, n_residues = self._parse_pdb(pdb_path)
+            coordinates, sequence, n_residues = self._parse_pdb(pdb_path)
         except Exception as e:
             logger.warning(f"Error parsing {pdb_path}: {e}")
-            # Return dummy data
+            # Return dummy data with proper sequence
             coordinates = torch.randn(10, 3)
+            sequence = torch.full((10,), NUC_TO_IDX["N"], dtype=torch.long)
             n_residues = 10
         
         n_atoms = coordinates.shape[0]
@@ -337,10 +464,11 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
         if self.augment_coords and self.training:
             coordinates = self._augment_coordinates(coordinates, coordinate_mask)
         
-        # Build design conditions
+        # Build design conditions with sequence
         design_conditions = {
             "length": n_residues,
             "n_atoms": n_atoms,
+            "sequence": sequence,  # [N] nucleotide indices
             "asym_id": torch.zeros(n_residues, dtype=torch.long),
             "residue_index": torch.arange(n_residues),
             "entity_id": torch.zeros(n_residues, dtype=torch.long),
@@ -349,12 +477,22 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
             "atom_to_token_idx": self._create_atom_to_token_mapping(n_atoms, n_residues),
         }
         
-        # Token bonds
+        # Token bonds (backbone connectivity)
         token_bonds = torch.zeros(n_residues, n_residues)
         for i in range(n_residues - 1):
             token_bonds[i, i + 1] = 1.0
             token_bonds[i + 1, i] = 1.0
         design_conditions["token_bonds"] = token_bonds
+        
+        # Add base pair compatibility (from sequence)
+        design_conditions["pair_compat"] = compute_pair_compatibility_matrix(sequence)
+        
+        # Compute secondary structure from coordinates
+        if self.use_ss_constraints:
+            design_conditions["ss_constraints"] = detect_base_pairs_from_coords(
+                coordinates[:n_residues] if self.atom_selection == "c4prime" else coordinates[:n_residues],
+                sequence
+            )
         
         if self.use_distance_constraints:
             design_conditions["distance_constraints"] = self._compute_distance_constraints(
@@ -368,19 +506,20 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
         
         return design_conditions, label_dict
     
-    def _parse_pdb(self, pdb_path: str) -> Tuple[torch.Tensor, int]:
+    def _parse_pdb(self, pdb_path: str) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
-        Parse PDB file and extract coordinates.
+        Parse PDB file and extract coordinates and sequence.
         
         Args:
             pdb_path: Path to PDB file.
             
         Returns:
             coordinates: [N_atom, 3] tensor.
+            sequence: [N_res] tensor of nucleotide indices.
             n_residues: Number of residues.
         """
         coordinates = []
-        residue_ids = set()
+        residue_data = {}  # res_id -> (nuc_char, coords_list)
         
         # Define which atoms to select based on atom_selection
         if self.atom_selection == "c4prime":
@@ -395,11 +534,15 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
                 if line.startswith("ATOM") or line.startswith("HETATM"):
                     atom_name = line[12:16].strip()
                     res_id = int(line[22:26].strip())
+                    chain_id = line[21]
+                    unique_res_id = (chain_id, res_id)
                     
                     # Check if this is an RNA residue
                     res_name = line[17:20].strip()
-                    if res_name not in {"A", "U", "G", "C", "DA", "DU", "DG", "DC", 
-                                        "ADE", "URA", "GUA", "CYT"}:
+                    
+                    # Get nucleotide character
+                    nuc_char = RESNAME_TO_NUC.get(res_name, None)
+                    if nuc_char is None:
                         continue
                     
                     # Apply atom selection
@@ -410,15 +553,33 @@ class RNADesignDatasetFromPDB(RNADesignDataset):
                         x = float(line[30:38])
                         y = float(line[38:46])
                         z = float(line[46:54])
-                        coordinates.append([x, y, z])
-                        residue_ids.add(res_id)
+                        
+                        if unique_res_id not in residue_data:
+                            residue_data[unique_res_id] = (nuc_char, [])
+                        residue_data[unique_res_id][1].append([x, y, z])
+                        
                     except ValueError:
                         continue
         
-        if len(coordinates) == 0:
-            raise ValueError(f"No valid coordinates found in {pdb_path}")
+        if len(residue_data) == 0:
+            raise ValueError(f"No valid RNA residues found in {pdb_path}")
         
-        return torch.tensor(coordinates, dtype=torch.float32), len(residue_ids)
+        # Sort by residue ID and extract coordinates/sequence
+        sorted_res_ids = sorted(residue_data.keys(), key=lambda x: (x[0], x[1]))
+        
+        sequence = []
+        all_coords = []
+        
+        for res_id in sorted_res_ids:
+            nuc_char, coords_list = residue_data[res_id]
+            sequence.append(NUC_TO_IDX[nuc_char])
+            all_coords.extend(coords_list)
+        
+        n_residues = len(sorted_res_ids)
+        coordinates = torch.tensor(all_coords, dtype=torch.float32)
+        sequence = torch.tensor(sequence, dtype=torch.long)
+        
+        return coordinates, sequence, n_residues
     
     def _create_atom_to_token_mapping(
         self,
@@ -475,15 +636,19 @@ def collate_design_batch(
         "dtype": design_conditions_list[0].get("dtype", torch.float32),
     }
     
-    # Pad and stack token-level features
-    token_features = ["asym_id", "residue_index", "entity_id", "token_index", "sym_id"]
+    # Pad and stack token-level features (including sequence)
+    token_features = ["asym_id", "residue_index", "entity_id", "token_index", "sym_id", "sequence"]
     for key in token_features:
+        if key not in design_conditions_list[0]:
+            continue
         padded = []
         for d in design_conditions_list:
             tensor = d[key]
             pad_len = max_tokens - tensor.shape[0]
             if pad_len > 0:
-                tensor = F.pad(tensor, (0, pad_len), value=0)
+                # Pad sequence with N (unknown) = 4
+                pad_value = 4 if key == "sequence" else 0
+                tensor = F.pad(tensor, (0, pad_len), value=pad_value)
             padded.append(tensor)
         batched_design[key] = torch.stack(padded, dim=0)
     
@@ -530,6 +695,17 @@ def collate_design_batch(
                 dist = F.pad(dist, (0, 0, 0, max_tokens - n, 0, max_tokens - n), value=0)
             padded_dist.append(dist)
         batched_design["distance_constraints"] = torch.stack(padded_dist, dim=0)
+    
+    # Handle pair compatibility matrix
+    if "pair_compat" in design_conditions_list[0]:
+        padded_compat = []
+        for d in design_conditions_list:
+            compat = d["pair_compat"]
+            n = compat.shape[0]
+            if n < max_tokens:
+                compat = F.pad(compat, (0, max_tokens - n, 0, max_tokens - n), value=0)
+            padded_compat.append(compat)
+        batched_design["pair_compat"] = torch.stack(padded_compat, dim=0)
     
     # Batch labels
     padded_coords = []

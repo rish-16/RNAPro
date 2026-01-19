@@ -4,58 +4,54 @@ A flow matching-based generative model for RNA 3D structure design, fine-tuned f
 
 ---
 
-## Quick Start
+## Quick Start with RNAsolo Data
 
-### 1. Prepare Data
+### Step 1: Download RNAsolo Equivalence Classes
 
-You have **three options** for data loading:
-
-#### Option A: Preprocess to .pt files (Recommended for large datasets)
 ```bash
-python preprocess/prepare_design_data.py \
-    --input_dir ./raw_structures \
-    --output_dir ./data/train \
-    --min_length 10 \
-    --max_length 512
+# Create data directory
+mkdir -p ./data/rnasolo
+
+# Download RNAsolo equivalence classes (PDB format)
+# Visit: https://rnasolo.cs.put.poznan.pl/
+# Download: "Representative set" → "PDB format" → "All equivalence classes"
+
+# Or use wget (update URL as needed):
+wget -O rnasolo_representatives.zip "https://rnasolo.cs.put.poznan.pl/download/..."
+unzip rnasolo_representatives.zip -d ./data/rnasolo/
 ```
 
-Then train with:
+### Step 2: Verify Your Data
+
 ```bash
---train_data_dir ./data/train --use_pdb_directly False
+# Check structure count
+ls ./data/rnasolo/*.pdb | wc -l
+
+# Verify C4' atoms exist (should see ~1 per residue)
+grep " C4'" ./data/rnasolo/*.pdb | head -20
+
+# Check length distribution
+for f in ./data/rnasolo/*.pdb; do 
+    grep "^ATOM" "$f" | grep " C4'" | wc -l
+done | sort -n | uniq -c | head -20
 ```
 
-#### Option B: Load PDB/CIF files directly (Simpler setup)
-```bash
-# No preprocessing needed - point directly to PDB files
---train_data_dir ./raw_structures \
---use_pdb_directly True \
---pdb_file_pattern "*.pdb" \
---atom_selection c4prime
-```
+### Step 3: Train the Model
 
-#### Option C: From existing .pt files
-Place them directly in `./data/train/`
+**Option A: Direct PDB Loading (Simplest)**
 
-Each `.pt` file should contain:
-```python
-{
-    "coordinates": Tensor[N, 3],      # C4' atom positions
-    "coordinate_mask": Tensor[N],     # Validity mask (all 1s)
-    "n_tokens": int,                  # Number of residues
-}
-```
-
----
-
-### 2. Train (Multi-GPU)
-
-**Local (torchrun):**
 ```bash
 torchrun --nproc_per_node=4 runner/train_design.py \
     --project rnapro_design \
-    --run_name my_experiment \
+    --run_name rnasolo_cfg \
     --base_dir ./experiments \
-    --train_data_dir ./data/train \
+    --train_data_dir ./data/rnasolo \
+    --use_pdb_directly True \
+    --pdb_file_pattern "*.pdb" \
+    --atom_selection c4prime \
+    --design_mode cfg \
+    --cfg_drop_prob 0.1 \
+    --use_ss_constraints True \
     --load_checkpoint_path ./release_data/protenix_models/protenix_base_default_v0.5.0.pt \
     --load_strict False \
     --load_params_only True \
@@ -64,52 +60,110 @@ torchrun --nproc_per_node=4 runner/train_design.py \
     --lr 1e-4
 ```
 
-**SLURM cluster:**
+**Option B: Preprocess First (Faster Training)**
+
 ```bash
-sbatch slurm_train_design.sh
+# Step 3a: Preprocess to .pt files (extracts C4' coords + sequence)
+python preprocess/prepare_design_data.py \
+    --input_dir ./data/rnasolo \
+    --output_dir ./data/rnasolo_pt \
+    --min_length 10 \
+    --max_length 512
+
+# Step 3b: Train from preprocessed files
+torchrun --nproc_per_node=4 runner/train_design.py \
+    --project rnapro_design \
+    --run_name rnasolo_cfg \
+    --base_dir ./experiments \
+    --train_data_dir ./data/rnasolo_pt \
+    --use_pdb_directly False \
+    --design_mode cfg \
+    --cfg_drop_prob 0.1 \
+    --use_ss_constraints True \
+    --load_checkpoint_path ./release_data/protenix_models/protenix_base_default_v0.5.0.pt \
+    --load_strict False \
+    --load_params_only True \
+    --max_steps 50000 \
+    --batch_size 4 \
+    --lr 1e-4
 ```
 
----
+### Step 4: Sample Structures
 
-### 3. Sample (Single GPU)
-
-**Local:**
 ```bash
+# Unconditional generation
 python runner/sample_design.py \
-    --checkpoint ./experiments/my_experiment/checkpoints/checkpoint_latest.pt \
+    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
     --output_dir ./outputs \
     --length 50 \
     --n_samples 10 \
     --n_steps 100 \
     --save_pdb
-```
 
-**SLURM cluster:**
-```bash
-sbatch slurm_sample_design.sh
+# SS-conditioned with Classifier-Free Guidance
+python runner/sample_design.py \
+    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
+    --output_dir ./outputs \
+    --dot_bracket "((((....))))" \
+    --cfg_scale 1.5 \
+    --n_samples 10 \
+    --n_steps 100 \
+    --save_pdb
+
+# Sequence + SS conditioned
+python runner/sample_design.py \
+    --checkpoint ./experiments/rnasolo_cfg/checkpoints/checkpoint_latest.pt \
+    --output_dir ./outputs \
+    --sequence "GGCAUUAGCC" \
+    --dot_bracket "(((....)))" \
+    --cfg_scale 2.0 \
+    --n_samples 10 \
+    --save_pdb
 ```
 
 ---
 
-## SLURM Workflow
+## SLURM Cluster Workflow
 
 ```bash
-# 1. Preprocess PDB/CIF → .pt (CPU job)
+# 1. (Optional) Preprocess on CPU node
 sbatch slurm_preprocess.sh
 
-# 2. Train on multi-GPU (after step 1)
+# 2. Train on multi-GPU node
 sbatch slurm_train_design.sh
 
-# 3. Sample structures (after step 2)
+# 3. Sample structures
 sbatch slurm_sample_design.sh
 ```
 
-**Customize SLURM scripts:**
+Edit SLURM scripts to match your cluster:
 ```bash
-#SBATCH --partition=your_partition   # Your GPU partition
-#SBATCH --account=your_account       # Your account (if required)
-#SBATCH --gpus-per-node=4            # Number of GPUs
-#SBATCH --time=48:00:00              # Wall time
+#SBATCH --partition=your_gpu_partition
+#SBATCH --account=your_account
+#SBATCH --gpus-per-node=4
+#SBATCH --time=48:00:00
+```
+
+---
+
+## Design Modes
+
+| Mode | Training | Inference | Use Case |
+|------|----------|-----------|----------|
+| `cfg` | Randomly drops conditioning (10%) | CFG interpolation | **Recommended** - supports both conditional and unconditional |
+| `conditional` | Always uses sequence/SS | Requires constraints | When you always want conditioning |
+| `unconditional` | Never uses sequence/SS | Length only | Pure unconditional generation |
+
+### Classifier-Free Guidance (CFG)
+
+CFG trains a single model that can do both conditional and unconditional generation:
+
+```bash
+# Training: 10% of batches have conditioning dropped
+--design_mode cfg --cfg_drop_prob 0.1
+
+# Inference: interpolate between conditional and unconditional
+--cfg_scale 1.5  # 1.0 = conditional only, >1.0 = stronger guidance
 ```
 
 ---
@@ -118,26 +172,43 @@ sbatch slurm_sample_design.sh
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--design_mode` | cfg | Training mode: cfg, conditional, unconditional |
+| `--cfg_drop_prob` | 0.1 | Probability of dropping conditioning (CFG) |
+| `--cfg_scale` | 1.5 | Guidance scale at inference |
+| `--use_ss_constraints` | True | Detect base pairs from coordinates |
 | `--batch_size` | 4 | Per-GPU batch size |
 | `--lr` | 1e-4 | Learning rate |
 | `--max_steps` | 50000 | Training steps |
 | `--n_steps` | 50 | Sampling integration steps |
 | `--freeze_pairformer` | False | Freeze pretrained pairformer |
 | `--freeze_diffusion` | False | Freeze pretrained diffusion module |
-| `--use_wandb` | True | Enable Weights & Biases logging |
-| `--use_pdb_directly` | False | Load PDB files directly (no preprocessing) |
-| `--pdb_file_pattern` | "*.pdb" | Glob pattern for PDB files |
-| `--atom_selection` | "c4prime" | Which atoms: c4prime, backbone, all |
 
 ---
 
-## Training Modes
+## What Gets Loaded from Pretrained RNAPro
 
-| Mode | Command | Use Case |
-|------|---------|----------|
-| Full fine-tune | `--freeze_pairformer False --freeze_diffusion False` | Best quality |
-| Partial fine-tune | `--freeze_pairformer True` | Limited GPU memory |
-| Feature extraction | `--freeze_pairformer True --freeze_diffusion True` | Quick experiments |
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `pairformer_stack` | ✅ Loaded | Core representation learning |
+| `diffusion_module` | ✅ Loaded | Structure generation |
+| `relative_position_encoding` | ✅ Loaded | Positional info |
+| `condition_embedder` | ❌ Random init | New module for design |
+
+---
+
+## Data Pipeline
+
+```
+RNAsolo PDB → parse_pdb() → (C4' coords, sequence) → detect_base_pairs()
+                                                              ↓
+                                                       ss_constraints
+                                                              ↓
+                              StructureConditionEmbedder(sequence, pair_compat, ss_constraints)
+                                                              ↓
+                                                    Pairformer (pretrained)
+                                                              ↓
+                                                    Flow Matching Training
+```
 
 ---
 
@@ -148,19 +219,6 @@ Training automatically logs:
 - **Flow Matching**: Error by timestep (early/mid/late)
 - **Optimization**: Learning rate, gradient norm
 - **Validation**: RMSD, coordinate error, GDT-like metrics
-
----
-
-## Directory Structure
-
-```
-./experiments/my_experiment/
-├── config.yaml           # Saved configuration
-├── checkpoints/
-│   ├── checkpoint_latest.pt
-│   └── checkpoint_50000_final.pt
-└── samples/              # Generated structures
-```
 
 ---
 
@@ -189,3 +247,6 @@ Training automatically logs:
 ```bash
 --num_workers 8
 ```
+
+**No C4' atoms found:**
+Check that your PDB files contain RNA (not protein) with standard atom names.

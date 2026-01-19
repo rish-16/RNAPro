@@ -103,26 +103,27 @@ class RNAProDesign(nn.Module):
         self.N_cycle = configs.model.N_cycle
         self.diffusion_batch_size = configs.diffusion_batch_size
         
-        # Design mode: "unconditional" or "conditional"
-        self.design_mode = configs.get("design_mode", "conditional")
+        # Classifier-Free Guidance (CFG) settings
+        # During training: randomly drop conditioning with probability cfg_drop_prob
+        # During inference: interpolate between conditional and unconditional predictions
+        self.cfg_drop_prob = configs.get("cfg_drop_prob", 0.1)  # 10% unconditional
+        self.cfg_scale = configs.get("cfg_scale", 1.0)  # Guidance scale at inference
         
-        # Condition embedder (replaces InputFeatureEmbedder)
-        if self.design_mode == "unconditional":
-            self.condition_embedder = UnconditionalEmbedder(
-                c_s=self.c_s,
-                c_z=self.c_z,
-                c_s_inputs=self.c_s_inputs,
-                max_length=configs.get("max_length", 1024),
-            )
-        else:
-            self.condition_embedder = StructureConditionEmbedder(
-                c_s=self.c_s,
-                c_z=self.c_z,
-                c_s_inputs=self.c_s_inputs,
-                max_length=configs.get("max_length", 1024),
-                n_ss_classes=configs.get("n_ss_classes", 4),
-                n_distance_bins=configs.get("n_distance_bins", 64),
-            )
+        # Design mode: "unconditional", "conditional", or "cfg" (classifier-free guidance)
+        self.design_mode = configs.get("design_mode", "cfg")
+        
+        # Single condition embedder that handles both modes
+        # For unconditional: sequence/ss_constraints are set to None
+        # For conditional: sequence/ss_constraints are provided
+        # For CFG: randomly drop conditioning during training
+        self.condition_embedder = StructureConditionEmbedder(
+            c_s=self.c_s,
+            c_z=self.c_z,
+            c_s_inputs=self.c_s_inputs,
+            max_length=configs.get("max_length", 1024),
+            n_ss_classes=configs.get("n_ss_classes", 4),
+            n_distance_bins=configs.get("n_distance_bins", 64),
+        )
         
         # Relative position encoding (KEEP from original)
         self.relative_position_encoding = RelativePositionEncoding(
@@ -377,23 +378,39 @@ class RNAProDesign(nn.Module):
         dtype = design_conditions["dtype"]
         batch_size = design_conditions.get("batch_size", 1)
         
+        # Get conditioning inputs
+        sequence = design_conditions.get("sequence")
+        pair_compat = design_conditions.get("pair_compat")
+        ss_constraints = design_conditions.get("ss_constraints")
+        distance_constraints = design_conditions.get("distance_constraints")
+        
+        # Apply Classifier-Free Guidance (CFG) conditioning dropout during training
+        # Randomly drop conditioning to learn both conditional and unconditional generation
+        if self.training and self.design_mode == "cfg" and self.cfg_drop_prob > 0:
+            if torch.rand(1).item() < self.cfg_drop_prob:
+                # Drop all conditioning -> unconditional
+                sequence = None
+                pair_compat = None
+                ss_constraints = None
+                distance_constraints = None
+        elif self.design_mode == "unconditional":
+            # Always unconditional
+            sequence = None
+            pair_compat = None
+            ss_constraints = None
+            distance_constraints = None
+        
         # Get initial embeddings from condition embedder
-        if self.design_mode == "unconditional":
-            s_inputs, z_init = self.condition_embedder(
-                length=length,
-                device=device,
-                dtype=dtype,
-                batch_size=batch_size,
-            )
-        else:
-            s_inputs, z_init = self.condition_embedder(
-                length=length,
-                device=device,
-                dtype=dtype,
-                ss_constraints=design_conditions.get("ss_constraints"),
-                distance_constraints=design_conditions.get("distance_constraints"),
-                batch_size=batch_size,
-            )
+        s_inputs, z_init = self.condition_embedder(
+            length=length,
+            device=device,
+            dtype=dtype,
+            sequence=sequence,
+            pair_compat=pair_compat,
+            ss_constraints=ss_constraints,
+            distance_constraints=distance_constraints,
+            batch_size=batch_size,
+        )
         
         # Project s_inputs to s_init dimension
         s_init = self.linear_no_bias_sinit(s_inputs)  # [B, N, c_s]
@@ -559,6 +576,103 @@ class RNAProDesign(nn.Module):
         
         return pred_dict, log_dict
     
+    def _get_pairformer_conditional(
+        self,
+        design_conditions: dict[str, Any],
+        use_conditioning: bool,
+        chunk_size: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get pairformer output with or without conditioning.
+        
+        Helper for CFG sampling.
+        """
+        # Make a copy of conditions
+        cond = dict(design_conditions)
+        
+        if not use_conditioning:
+            # Remove conditioning for unconditional path
+            cond["sequence"] = None
+            cond["pair_compat"] = None
+            cond["ss_constraints"] = None
+            cond["distance_constraints"] = None
+        
+        return self.get_pairformer_output(
+            design_conditions=cond,
+            N_cycle=self.N_cycle,
+            inplace_safe=True,
+            chunk_size=chunk_size,
+        )
+    
+    @torch.no_grad()
+    def sample_with_cfg(
+        self,
+        design_conditions: dict[str, Any],
+        n_samples: int = 1,
+        n_steps: Optional[int] = None,
+        cfg_scale: float = 1.5,
+        chunk_size: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Generate RNA structures using Classifier-Free Guidance.
+        
+        At each step, computes both conditional and unconditional predictions,
+        then interpolates: v = v_uncond + cfg_scale * (v_cond - v_uncond)
+        
+        Args:
+            design_conditions: Design conditions dictionary with sequence/SS.
+            n_samples: Number of structures to generate.
+            n_steps: Number of integration steps.
+            cfg_scale: Guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
+            chunk_size: Chunk size for attention.
+            
+        Returns:
+            coordinates: [n_samples, N_atom, 3] generated coordinates.
+        """
+        self.eval()
+        
+        n_atoms = design_conditions["n_atoms"]
+        device = design_conditions["device"]
+        dtype = design_conditions["dtype"]
+        batch_size = design_conditions.get("batch_size", 1)
+        
+        # Get BOTH conditional and unconditional pairformer outputs
+        s_inputs_cond, s_cond, z_cond = self._get_pairformer_conditional(
+            design_conditions, use_conditioning=True, chunk_size=chunk_size
+        )
+        s_inputs_uncond, s_uncond, z_uncond = self._get_pairformer_conditional(
+            design_conditions, use_conditioning=False, chunk_size=chunk_size
+        )
+        
+        # Update sampler steps if provided
+        if n_steps is not None:
+            sampler = FlowMatchingInferenceSampler(
+                n_steps=n_steps,
+                sigma_data=self.configs.sigma_data,
+            )
+        else:
+            sampler = self.inference_sampler
+        
+        # Sample using CFG-aware Euler integration
+        coordinates = sampler.sample_with_cfg(
+            velocity_net=self.diffusion_module,
+            shape=(batch_size, n_samples, n_atoms, 3),
+            device=device,
+            dtype=dtype,
+            input_feature_dict=design_conditions,
+            s_inputs_cond=s_inputs_cond,
+            s_trunk_cond=s_cond,
+            z_trunk_cond=z_cond,
+            s_inputs_uncond=s_inputs_uncond,
+            s_trunk_uncond=s_uncond,
+            z_trunk_uncond=z_uncond,
+            cfg_scale=cfg_scale,
+            chunk_size=chunk_size,
+            inplace_safe=True,
+        )
+        
+        return coordinates
+    
     @torch.no_grad()
     def sample(
         self,
@@ -667,6 +781,8 @@ def create_design_conditions(
     device: torch.device,
     dtype: torch.dtype = torch.float32,
     batch_size: int = 1,
+    sequence: Optional[torch.Tensor] = None,
+    pair_compat: Optional[torch.Tensor] = None,
     ss_constraints: Optional[torch.Tensor] = None,
     distance_constraints: Optional[torch.Tensor] = None,
     atom_to_token_idx: Optional[torch.Tensor] = None,
@@ -683,6 +799,8 @@ def create_design_conditions(
         device: Target device.
         dtype: Target dtype.
         batch_size: Batch size.
+        sequence: Optional nucleotide indices [N] (0=A, 1=U, 2=G, 3=C, 4=N).
+        pair_compat: Optional base-pair compatibility matrix [N, N].
         ss_constraints: Optional secondary structure constraints [N, N].
         distance_constraints: Optional distance constraints [N, N, n_bins].
         atom_to_token_idx: Mapping from atoms to tokens [N_atom].
@@ -721,6 +839,14 @@ def create_design_conditions(
         design_conditions["atom_to_token_idx"] = torch.arange(
             min(n_atoms, length), device=device
         ).unsqueeze(0).expand(batch_size, -1)
+    
+    # Add sequence information
+    if sequence is not None:
+        design_conditions["sequence"] = sequence
+    
+    # Add pair compatibility matrix
+    if pair_compat is not None:
+        design_conditions["pair_compat"] = pair_compat
     
     # Add optional constraints
     if ss_constraints is not None:

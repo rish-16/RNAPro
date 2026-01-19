@@ -297,6 +297,114 @@ class FlowMatchingInferenceSampler:
         ) ** rho
         
         return noise_level
+    
+    def sample_with_cfg(
+        self,
+        velocity_net: Callable,
+        shape: tuple,
+        device: torch.device,
+        dtype: torch.dtype,
+        input_feature_dict: dict[str, Any],
+        s_inputs_cond: torch.Tensor,
+        s_trunk_cond: torch.Tensor,
+        z_trunk_cond: torch.Tensor,
+        s_inputs_uncond: torch.Tensor,
+        s_trunk_uncond: torch.Tensor,
+        z_trunk_uncond: torch.Tensor,
+        cfg_scale: float = 1.5,
+        use_center_augmentation: bool = True,
+        chunk_size: Optional[int] = None,
+        inplace_safe: bool = False,
+    ) -> torch.Tensor:
+        """
+        Generate samples via Euler integration with Classifier-Free Guidance.
+        
+        At each step:
+        v = v_uncond + cfg_scale * (v_cond - v_uncond)
+        
+        Args:
+            velocity_net: Network that predicts velocity given (x, t).
+            shape: Output shape (batch_size, N_sample, N_atom, 3).
+            device: Target device.
+            dtype: Target dtype.
+            input_feature_dict: Feature dictionary for conditioning.
+            s_inputs_cond: Conditional single input embeddings.
+            s_trunk_cond: Conditional single trunk embeddings.
+            z_trunk_cond: Conditional pair trunk embeddings.
+            s_inputs_uncond: Unconditional single input embeddings.
+            s_trunk_uncond: Unconditional single trunk embeddings.
+            z_trunk_uncond: Unconditional pair trunk embeddings.
+            cfg_scale: Guidance scale (1.0 = conditional only, >1 = stronger guidance).
+            use_center_augmentation: Whether to center coordinates at each step.
+            chunk_size: Chunk size for attention (optional).
+            inplace_safe: Whether inplace operations are safe.
+            
+        Returns:
+            Generated coordinates [batch_size, N_sample, N_atom, 3]
+        """
+        batch_shape = shape[:-3]
+        n_sample = shape[-3]
+        n_atom = shape[-2]
+        
+        # Start from noise at t=0
+        x = torch.randn(shape, device=device, dtype=dtype) * self.sigma_data
+        
+        dt = 1.0 / self.n_steps
+        
+        for step in range(self.n_steps):
+            t = step / self.n_steps
+            
+            # Center coordinates for stability (optional)
+            if use_center_augmentation:
+                x = centre_random_augmentation(
+                    x_input_coords=x, 
+                    N_sample=1
+                ).squeeze(dim=-3).to(dtype)
+            
+            # Create timestep tensor
+            t_tensor = torch.full(
+                (*batch_shape, n_sample), t, 
+                device=device, dtype=dtype
+            )
+            
+            # Convert to noise level for diffusion module compatibility
+            t_hat = self._t_to_noise_level(t_tensor)
+            
+            # Predict CONDITIONAL velocity
+            x_pred_cond = velocity_net(
+                x_noisy=x,
+                t_hat_noise_level=t_hat,
+                input_feature_dict=input_feature_dict,
+                s_inputs=s_inputs_cond,
+                s_trunk=s_trunk_cond,
+                z_trunk=z_trunk_cond,
+                chunk_size=chunk_size,
+                inplace_safe=inplace_safe,
+            )
+            
+            # Predict UNCONDITIONAL velocity
+            x_pred_uncond = velocity_net(
+                x_noisy=x,
+                t_hat_noise_level=t_hat,
+                input_feature_dict=input_feature_dict,
+                s_inputs=s_inputs_uncond,
+                s_trunk=s_trunk_uncond,
+                z_trunk=z_trunk_uncond,
+                chunk_size=chunk_size,
+                inplace_safe=inplace_safe,
+            )
+            
+            # CFG interpolation: pred = uncond + scale * (cond - uncond)
+            x_pred = x_pred_uncond + cfg_scale * (x_pred_cond - x_pred_uncond)
+            
+            # Euler step
+            if t < 0.999:
+                v = (x_pred - x) / (1.0 - t + 1e-8)
+                x = x + v * dt
+            else:
+                x = x_pred
+        
+        return x
 
 
 def sample_flow_matching_training(

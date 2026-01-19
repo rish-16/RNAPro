@@ -77,8 +77,16 @@ basic_configs = {
     # Model name
     "model_name": "rnapro_design_v0.1.0",
     
-    # Design mode: "unconditional" or "conditional"
-    "design_mode": "conditional",
+    # Design mode: "unconditional", "conditional", or "cfg"
+    # - "unconditional": Never uses sequence/SS conditioning
+    # - "conditional": Always uses sequence/SS conditioning
+    # - "cfg": Classifier-Free Guidance (randomly drops conditioning during training)
+    "design_mode": "cfg",
+    
+    # Classifier-Free Guidance (CFG) settings
+    # Only used when design_mode="cfg"
+    "cfg_drop_prob": 0.1,   # Probability of dropping conditioning during training
+    "cfg_scale": 1.5,       # Guidance scale at inference (1.0 = conditional only)
     
     # Representation level
     "atom_level": "c4prime",  # "c4prime" (1 atom/residue) or "all_atom" (future)
@@ -103,7 +111,7 @@ data_configs = {
     "min_length": 10,
     
     # Constraints
-    "use_ss_constraints": False,
+    "use_ss_constraints": True,       # Enable SS detection from coordinates
     "use_distance_constraints": False,
     
     # Augmentation

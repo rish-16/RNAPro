@@ -49,6 +49,7 @@ class StructureConditionEmbedder(nn.Module):
         c_z: int = 128,
         c_s_inputs: int = 449,
         max_length: int = 1024,
+        n_nucleotides: int = 5,  # A, U, G, C, N (unknown)
         n_ss_classes: int = 4,  # unpaired, paired, any, mask
         n_distance_bins: int = 64,
         use_learnable_base: bool = True,
@@ -59,6 +60,7 @@ class StructureConditionEmbedder(nn.Module):
             c_z: Pair representation dimension.
             c_s_inputs: Input single representation dimension (for compatibility).
             max_length: Maximum sequence length supported.
+            n_nucleotides: Number of nucleotide types (A=0, U=1, G=2, C=3, N=4).
             n_ss_classes: Number of secondary structure constraint classes.
             n_distance_bins: Number of distance bins for distance constraints.
             use_learnable_base: Whether to use learnable base embeddings.
@@ -68,10 +70,14 @@ class StructureConditionEmbedder(nn.Module):
         self.c_z = c_z
         self.c_s_inputs = c_s_inputs
         self.max_length = max_length
+        self.n_nucleotides = n_nucleotides
         self.n_ss_classes = n_ss_classes
         self.n_distance_bins = n_distance_bins
         
-        # Learnable base single representation (no sequence info)
+        # Nucleotide embedding for single representation
+        self.nuc_embed = nn.Embedding(n_nucleotides, c_s_inputs)
+        
+        # Learnable base single representation (for positions without sequence)
         if use_learnable_base:
             self.base_single = nn.Parameter(torch.randn(1, c_s_inputs) * 0.02)
         else:
@@ -89,6 +95,14 @@ class StructureConditionEmbedder(nn.Module):
         # Secondary structure constraint embedding (pairwise)
         # Classes: 0=unpaired, 1=paired, 2=any/unknown, 3=mask
         self.ss_embed = nn.Embedding(n_ss_classes, c_z)
+        
+        # Pair compatibility embedding (encodes base-pairing rules: A-U, G-C, G-U)
+        # Input: binary compatibility matrix
+        self.pair_compat_embed = LinearNoBias(1, c_z)
+        
+        # Outer product of nucleotide embeddings for pair representation
+        self.nuc_pair_embed1 = LinearNoBias(c_s_inputs, c_z)
+        self.nuc_pair_embed2 = LinearNoBias(c_s_inputs, c_z)
         
         # Distance constraint embedding
         self.distance_constraint_embed = LinearNoBias(n_distance_bins, c_z)
@@ -121,6 +135,8 @@ class StructureConditionEmbedder(nn.Module):
         length: int,
         device: torch.device,
         dtype: torch.dtype,
+        sequence: Optional[torch.Tensor] = None,
+        pair_compat: Optional[torch.Tensor] = None,
         ss_constraints: Optional[torch.Tensor] = None,
         distance_constraints: Optional[torch.Tensor] = None,
         batch_size: int = 1,
@@ -132,6 +148,8 @@ class StructureConditionEmbedder(nn.Module):
             length: Sequence length.
             device: Target device.
             dtype: Target dtype.
+            sequence: [N] or [B, N] nucleotide indices (0=A, 1=U, 2=G, 3=C, 4=N).
+            pair_compat: [N, N] or [B, N, N] base-pair compatibility matrix.
             ss_constraints: Secondary structure constraints [N, N] or [B, N, N].
                 Values in {0, 1, 2, 3} for unpaired/paired/any/mask.
             distance_constraints: Distance constraints [N, N, n_bins] or [B, N, N, n_bins].
@@ -145,31 +163,49 @@ class StructureConditionEmbedder(nn.Module):
         # Position indices
         pos_idx = torch.arange(length, device=device)
         
-        # Single representation: base + position
-        # [1, c_s_inputs] -> [N, c_s_inputs]
-        s = self.base_single.expand(length, -1).to(dtype)
-        s = s + self.pos_embed(pos_idx).to(dtype)
+        # Single representation: nucleotide embedding + position + base
+        if sequence is not None:
+            if sequence.dim() == 1:
+                sequence = sequence.unsqueeze(0).expand(batch_size, -1)  # [B, N]
+            # Nucleotide embedding
+            s = self.nuc_embed(sequence).to(dtype)  # [B, N, c_s_inputs]
+        else:
+            # No sequence: use learnable base
+            s = self.base_single.expand(batch_size, length, -1).to(dtype)  # [B, N, c_s_inputs]
+        
+        # Add position embedding
+        s = s + self.pos_embed(pos_idx).unsqueeze(0).to(dtype)
         
         # Add length conditioning
         length_idx = torch.tensor(min(length - 1, self.max_length - 1), device=device)
-        s = s + self.length_embed(length_idx).unsqueeze(0).to(dtype)
+        s = s + self.length_embed(length_idx).unsqueeze(0).unsqueeze(0).to(dtype)
         
         # Apply projection
-        s = self.proj_s(s)
+        s = self.proj_s(s)  # [B, N, c_s_inputs]
         
-        # Expand for batch
-        s = s.unsqueeze(0).expand(batch_size, -1, -1)  # [B, N, c_s_inputs]
-        
-        # Pair representation: outer product initialization
-        z = (
-            self.linear_zinit1(s)[..., :, None, :] +  # [B, N, 1, c_z]
-            self.linear_zinit2(s)[..., None, :, :]    # [B, 1, N, c_z]
-        )  # [B, N, N, c_z]
+        # Pair representation: outer product of nucleotide embeddings
+        if sequence is not None:
+            nuc_emb = self.nuc_embed(sequence).to(dtype)  # [B, N, c_s_inputs]
+            z = (
+                self.nuc_pair_embed1(nuc_emb)[..., :, None, :] +  # [B, N, 1, c_z]
+                self.nuc_pair_embed2(nuc_emb)[..., None, :, :]    # [B, 1, N, c_z]
+            )  # [B, N, N, c_z]
+        else:
+            z = (
+                self.linear_zinit1(s)[..., :, None, :] +  # [B, N, 1, c_z]
+                self.linear_zinit2(s)[..., None, :, :]    # [B, 1, N, c_z]
+            )  # [B, N, N, c_z]
         
         # Add relative position information
         rel_pos = pos_idx[:, None] - pos_idx[None, :]  # [N, N]
         rel_pos = rel_pos.clamp(-self.max_length, self.max_length) + self.max_length  # Shift to positive
         z = z + self.pair_pos_embed(rel_pos).unsqueeze(0).to(dtype)
+        
+        # Add base-pair compatibility (encodes Watson-Crick and wobble rules)
+        if pair_compat is not None:
+            if pair_compat.dim() == 2:
+                pair_compat = pair_compat.unsqueeze(0)  # [1, N, N]
+            z = z + self.pair_compat_embed(pair_compat.unsqueeze(-1).to(dtype))
         
         # Add secondary structure constraints if provided
         if ss_constraints is not None:
