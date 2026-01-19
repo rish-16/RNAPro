@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 class RNADesignDataset(torch.utils.data.Dataset):
     """
     Dataset for RNA structure design training.
-    Loads PDB files and extracts C4' coordinates.
+    Loads PDB files or preprocessed .pt files and extracts C4' coordinates.
     """
     
     def __init__(
@@ -65,7 +65,7 @@ class RNADesignDataset(torch.utils.data.Dataset):
     ):
         """
         Args:
-            data_dir: Directory containing PDB files
+            data_dir: Directory containing PDB or .pt files
             max_length: Maximum sequence length
             min_length: Minimum sequence length
         """
@@ -76,47 +76,94 @@ class RNADesignDataset(torch.utils.data.Dataset):
         if not self.data_dir.exists():
             raise ValueError(f"Data directory does not exist: {data_dir}")
         
+        # First try to find .pt files (preprocessed)
+        self.pt_files = list(self.data_dir.glob("**/*.pt"))
+        if not self.pt_files:
+            self.pt_files = list(self.data_dir.glob("*.pt"))
+        
+        if self.pt_files:
+            # Use preprocessed .pt files
+            self.use_pt = True
+            self.data_files = self.pt_files
+            logger.info(f"Found {len(self.pt_files)} preprocessed .pt files in {data_dir}")
+            # Pre-filter valid .pt files
+            self._prefilter_pt_files()
+        else:
+            # Fall back to PDB files
+            self.use_pt = False
+            self._find_pdb_files()
+        
+    def _find_pdb_files(self):
+        """Find and validate PDB files."""
         # Find all PDB files (try multiple patterns)
-        self.pdb_files = list(self.data_dir.glob("**/*.pdb"))
-        if not self.pdb_files:
-            self.pdb_files = list(self.data_dir.glob("**/*.PDB"))
-        if not self.pdb_files:
-            self.pdb_files = list(self.data_dir.glob("**/*.ent"))
-        if not self.pdb_files:
-            self.pdb_files = list(self.data_dir.glob("**/*.cif"))
-        if not self.pdb_files:
-            # Try non-recursive
-            self.pdb_files = list(self.data_dir.glob("*.pdb"))
+        self.data_files = list(self.data_dir.glob("**/*.pdb"))
+        if not self.data_files:
+            self.data_files = list(self.data_dir.glob("**/*.PDB"))
+        if not self.data_files:
+            self.data_files = list(self.data_dir.glob("**/*.ent"))
+        if not self.data_files:
+            self.data_files = list(self.data_dir.glob("**/*.cif"))
+        if not self.data_files:
+            self.data_files = list(self.data_dir.glob("*.pdb"))
         
-        logger.info(f"Found {len(self.pdb_files)} structure files in {data_dir}")
+        logger.info(f"Found {len(self.data_files)} PDB files in {self.data_dir}")
         
-        if len(self.pdb_files) == 0:
-            # List directory contents for debugging
+        if len(self.data_files) == 0:
             contents = list(self.data_dir.iterdir())[:20]
-            logger.error(f"No PDB files found! Directory contents (first 20): {contents}")
-            raise ValueError(f"No PDB/CIF files found in {data_dir}. Check the directory path and file extensions.")
+            logger.error(f"No files found! Directory contents (first 20): {contents}")
+            raise ValueError(f"No PDB/PT files found in {self.data_dir}")
         
-        # Pre-filter valid files to avoid empty dataset
-        self._prefilter_files()
+        # Pre-filter valid files
+        self._prefilter_pdb_files()
         
-    def _prefilter_files(self):
-        """Pre-filter files to ensure we have valid samples."""
+    def _prefilter_pt_files(self):
+        """Pre-filter .pt files to ensure valid samples."""
         valid_files = []
         invalid_count = 0
         
-        for pdb_path in self.pdb_files:
+        for pt_path in self.data_files:
+            try:
+                data = torch.load(pt_path, map_location='cpu')
+                coords = self._get_coords_from_pt(data)
+                if coords is not None:
+                    n = coords.shape[0]
+                    if self.min_length <= n <= self.max_length:
+                        valid_files.append(pt_path)
+                    else:
+                        invalid_count += 1
+                else:
+                    invalid_count += 1
+            except Exception as e:
+                logger.warning(f"Error loading {pt_path}: {e}")
+                invalid_count += 1
+        
+        logger.info(f"Pre-filtering .pt files: {len(valid_files)} valid, {invalid_count} invalid")
+        
+        if len(valid_files) == 0:
+            if self.data_files:
+                sample = torch.load(self.data_files[0], map_location='cpu')
+                logger.error(f"Sample .pt file keys: {sample.keys() if isinstance(sample, dict) else type(sample)}")
+            raise ValueError(f"No valid .pt files found in {self.data_dir}")
+        
+        self.data_files = valid_files
+    
+    def _prefilter_pdb_files(self):
+        """Pre-filter PDB files to ensure we have valid samples."""
+        valid_files = []
+        invalid_count = 0
+        
+        for pdb_path in self.data_files:
             coords = self._extract_c4_coords(pdb_path, log_errors=False)
             if coords is not None:
                 valid_files.append(pdb_path)
             else:
                 invalid_count += 1
         
-        logger.info(f"Pre-filtering: {len(valid_files)} valid, {invalid_count} invalid files")
+        logger.info(f"Pre-filtering PDB files: {len(valid_files)} valid, {invalid_count} invalid")
         
         if len(valid_files) == 0:
-            # Sample a file and show detailed error
-            if self.pdb_files:
-                sample_file = self.pdb_files[0]
+            if self.data_files:
+                sample_file = self.data_files[0]
                 logger.error(f"Sample file: {sample_file}")
                 try:
                     with open(sample_file, 'r') as f:
@@ -126,10 +173,22 @@ class RNADesignDataset(torch.utils.data.Dataset):
                     logger.error(f"Could not read sample file: {e}")
             raise ValueError(f"No valid RNA structures with C4' atoms found in {self.data_dir}")
         
-        self.pdb_files = valid_files
+        self.data_files = valid_files
         
     def __len__(self) -> int:
-        return len(self.pdb_files)
+        return len(self.data_files)
+    
+    def _get_coords_from_pt(self, data: dict) -> Optional[torch.Tensor]:
+        """Extract coordinates from .pt file data."""
+        # Try common key names
+        for key in ['coordinate', 'coordinates', 'coords', 'c4_coords', 'positions']:
+            if key in data:
+                coords = data[key]
+                if isinstance(coords, torch.Tensor):
+                    return coords.float()
+                else:
+                    return torch.tensor(coords, dtype=torch.float32)
+        return None
     
     def _extract_c4_coords(self, pdb_path: Path, log_errors: bool = True) -> Optional[torch.Tensor]:
         """Extract C4' coordinates from PDB file."""
@@ -140,7 +199,6 @@ class RNADesignDataset(torch.utils.data.Dataset):
                 for line in f:
                     if line.startswith(("ATOM", "HETATM")):
                         atom_name = line[12:16].strip()
-                        # Handle both C4' and C4* naming
                         if atom_name in ("C4'", "C4*"):
                             x = float(line[30:38])
                             y = float(line[38:46])
@@ -157,12 +215,22 @@ class RNADesignDataset(torch.utils.data.Dataset):
         return torch.tensor(coords, dtype=torch.float32)
     
     def __getitem__(self, idx: int) -> Optional[dict[str, torch.Tensor]]:
-        pdb_path = self.pdb_files[idx]
-        coords = self._extract_c4_coords(pdb_path)
+        file_path = self.data_files[idx]
         
-        if coords is None:
-            # Return a random valid item instead (shouldn't happen after prefiltering)
-            return self.__getitem__(random.randint(0, len(self) - 1))
+        if self.use_pt:
+            # Load from .pt file
+            try:
+                data = torch.load(file_path, map_location='cpu')
+                coords = self._get_coords_from_pt(data)
+                if coords is None:
+                    return self.__getitem__(random.randint(0, len(self) - 1))
+            except Exception:
+                return self.__getitem__(random.randint(0, len(self) - 1))
+        else:
+            # Load from PDB file
+            coords = self._extract_c4_coords(file_path)
+            if coords is None:
+                return self.__getitem__(random.randint(0, len(self) - 1))
         
         n_residues = coords.shape[0]
         
