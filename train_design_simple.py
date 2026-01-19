@@ -313,37 +313,89 @@ class RNAProDesignSimple(nn.Module):
         )
         
     def load_pretrained(self, checkpoint_path: str):
-        """Load pretrained RNAPro weights."""
+        """Load pretrained RNAPro/Protenix weights."""
         logger.info(f"Loading pretrained model from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         
-        # Extract model state dict
+        # Extract model state dict - handle different checkpoint formats
         if "model" in checkpoint:
             state_dict = checkpoint["model"]
         elif "state_dict" in checkpoint:
             state_dict = checkpoint["state_dict"]
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
         else:
+            # Assume it's the state dict directly
             state_dict = checkpoint
         
-        # Load Pairformer
-        pairformer_state = {
-            k.replace("pairformer_stack.", ""): v 
-            for k, v in state_dict.items() 
-            if k.startswith("pairformer_stack.")
-        }
-        if pairformer_state:
-            self.pairformer_stack.load_state_dict(pairformer_state)
-            logger.info(f"Loaded PairformerStack ({len(pairformer_state)} params)")
+        # Debug: show available top-level keys
+        top_keys = set(k.split('.')[0] for k in state_dict.keys())
+        logger.info(f"Checkpoint top-level keys: {top_keys}")
         
-        # Load DiffusionModule
-        diffusion_state = {
-            k.replace("diffusion_module.", ""): v 
-            for k, v in state_dict.items() 
-            if k.startswith("diffusion_module.")
-        }
+        # Load Pairformer - try different possible prefixes
+        pairformer_prefixes = ["pairformer_stack.", "model.pairformer_stack.", "pairformer."]
+        pairformer_state = {}
+        
+        for prefix in pairformer_prefixes:
+            pairformer_state = {
+                k.replace(prefix, ""): v 
+                for k, v in state_dict.items() 
+                if k.startswith(prefix)
+            }
+            if pairformer_state:
+                logger.info(f"Found pairformer weights with prefix '{prefix}'")
+                break
+        
+        if pairformer_state:
+            try:
+                missing, unexpected = self.pairformer_stack.load_state_dict(pairformer_state, strict=False)
+                logger.info(f"Loaded PairformerStack: {len(pairformer_state)} params, {len(missing)} missing, {len(unexpected)} unexpected")
+                if missing:
+                    logger.warning(f"Missing keys (first 5): {missing[:5]}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys (first 5): {unexpected[:5]}")
+            except Exception as e:
+                logger.error(f"Error loading PairformerStack: {e}")
+        else:
+            logger.warning("No PairformerStack weights found in checkpoint")
+        
+        # Load DiffusionModule - try different possible prefixes
+        diffusion_prefixes = ["diffusion_module.", "model.diffusion_module.", "diffusion."]
+        diffusion_state = {}
+        
+        for prefix in diffusion_prefixes:
+            diffusion_state = {
+                k.replace(prefix, ""): v 
+                for k, v in state_dict.items() 
+                if k.startswith(prefix)
+            }
+            if diffusion_state:
+                logger.info(f"Found diffusion weights with prefix '{prefix}'")
+                break
+        
         if diffusion_state:
-            self.diffusion_module.load_state_dict(diffusion_state)
-            logger.info(f"Loaded DiffusionModule ({len(diffusion_state)} params)")
+            try:
+                missing, unexpected = self.diffusion_module.load_state_dict(diffusion_state, strict=False)
+                logger.info(f"Loaded DiffusionModule: {len(diffusion_state)} params, {len(missing)} missing, {len(unexpected)} unexpected")
+                if missing:
+                    logger.warning(f"Missing keys (first 5): {missing[:5]}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys (first 5): {unexpected[:5]}")
+            except Exception as e:
+                logger.error(f"Error loading DiffusionModule: {e}")
+        else:
+            logger.warning("No DiffusionModule weights found in checkpoint")
+        
+        # Try to load linear layers if they exist in checkpoint
+        linear_keys = ["linear_no_bias_sinit", "linear_no_bias_zinit1", "linear_no_bias_zinit2"]
+        for key in linear_keys:
+            for prefix in ["", "model."]:
+                full_key = f"{prefix}{key}.weight"
+                if full_key in state_dict:
+                    target_name = key.replace("linear_no_bias_", "linear_")
+                    if hasattr(self, target_name):
+                        getattr(self, target_name).weight.data = state_dict[full_key]
+                        logger.info(f"Loaded {target_name} from checkpoint")
     
     def create_input_features(
         self,
@@ -645,17 +697,58 @@ def train(args):
     logger.info("Training complete!")
 
 
+def inspect_checkpoint(checkpoint_path: str):
+    """Inspect checkpoint structure for debugging."""
+    print(f"\n=== Inspecting checkpoint: {checkpoint_path} ===\n")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    
+    if isinstance(checkpoint, dict):
+        print(f"Top-level keys: {list(checkpoint.keys())}")
+        
+        # Find the state dict
+        if "model" in checkpoint:
+            state_dict = checkpoint["model"]
+            print("\nUsing 'model' key")
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            print("\nUsing 'state_dict' key")
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+            print("\nUsing 'model_state_dict' key")
+        else:
+            state_dict = checkpoint
+            print("\nUsing checkpoint directly as state_dict")
+        
+        # Count keys by prefix
+        prefix_counts = {}
+        for k in state_dict.keys():
+            prefix = k.split('.')[0]
+            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+        
+        print(f"\nParameter counts by prefix:")
+        for prefix, count in sorted(prefix_counts.items(), key=lambda x: -x[1]):
+            print(f"  {prefix}: {count}")
+        
+        # Show sample keys
+        print(f"\nSample keys (first 20):")
+        for k in list(state_dict.keys())[:20]:
+            print(f"  {k}")
+    else:
+        print(f"Checkpoint is type: {type(checkpoint)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="RNA Structure Design Training (Simplified)")
     
     # Data
-    parser.add_argument("--data_dir", type=str, required=True, help="Directory with PDB files")
+    parser.add_argument("--data_dir", type=str, required=False, help="Directory with PDB files")
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--min_length", type=int, default=10)
     
     # Model
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Pretrained RNAPro checkpoint")
     parser.add_argument("--cfg_drop_prob", type=float, default=0.1, help="CFG dropout probability")
+    parser.add_argument("--inspect_checkpoint", action="store_true", help="Just inspect checkpoint and exit")
     
     # Training
     parser.add_argument("--batch_size", type=int, default=4)
@@ -673,6 +766,20 @@ def main():
     parser.add_argument("--save_every", type=int, default=5000)
     
     args = parser.parse_args()
+    
+    # Inspect checkpoint mode
+    if args.inspect_checkpoint:
+        if not args.checkpoint_path:
+            print("Error: --checkpoint_path required with --inspect_checkpoint")
+            return
+        inspect_checkpoint(args.checkpoint_path)
+        return
+    
+    # Normal training mode
+    if not args.data_dir:
+        print("Error: --data_dir required for training")
+        return
+    
     train(args)
 
 
