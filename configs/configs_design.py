@@ -61,7 +61,7 @@ basic_configs = {
     "find_unused_parameters": False,  # For DDP with frozen parameters
     
     # Logging
-    "use_wandb": True,
+    "use_wandb": False,  # Set True to enable wandb logging
     "wandb_id": "",
     
     # Reproducibility
@@ -129,6 +129,7 @@ data_configs = {
 optim_configs = {
     # Learning rate
     "lr": 1e-4,
+    "other_lr": 1e-4,  # Learning rate for non-finetuned parameters
     "lr_scheduler": "cosine_annealing",
     "warmup_steps": 1000,
     "max_steps": 100000,  # Default: 100k steps, override with --max_steps
