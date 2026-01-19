@@ -44,7 +44,7 @@ class EMAWrapper(object):
         self.model = model
         self.decay = decay
         self.mutable_param_keywords = [
-            s.strip() for s in mutable_param_keywords if s.strip()
+            s.strip() for s in (mutable_param_keywords or []) if s.strip()
         ]
         self.shadow = {}
         self.backup = {}

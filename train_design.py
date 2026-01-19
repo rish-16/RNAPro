@@ -308,9 +308,13 @@ class DesignTrainer:
         self.ema = None
         if self.configs.ema_decay > 0:
             model_without_ddp = self.model.module if hasattr(self.model, "module") else self.model
+            mutable_keywords = self.configs.get("ema_mutable_param_keywords", [])
+            if mutable_keywords is None or (len(mutable_keywords) == 1 and mutable_keywords[0] == ""):
+                mutable_keywords = []
             self.ema = EMAWrapper(
                 model_without_ddp,
                 decay=self.configs.ema_decay,
+                mutable_param_keywords=mutable_keywords if mutable_keywords else None,
             )
     
     def init_loss(self):
