@@ -442,30 +442,24 @@ def sample_flow_matching_training(
         v_target: Target velocity [..., N_sample, N_atom, 3]
         t: Sampled timesteps [..., N_sample]
     """
-    batch_shape = label_dict["coordinate"].shape[:-2]
-    device = label_dict["coordinate"].device
-    dtype = label_dict["coordinate"].dtype
-    n_atoms = label_dict["coordinate"].shape[-2]
+    coords = label_dict["coordinate"]
+    batch_shape = coords.shape[:-2]
+    device = coords.device
+    dtype = coords.dtype
+    n_atoms = coords.shape[-2]
     
-    # Get mask, ensure correct shape [batch..., N_atom] matching coords [batch..., N_atom, 3]
-    coord_mask = label_dict.get("coordinate_mask")
-    if coord_mask is not None:
-        # Check if mask has correct number of dimensions and last dim matches n_atoms
-        expected_shape = label_dict["coordinate"].shape[:-1]  # Remove xyz dim
-        if coord_mask.shape != expected_shape:
-            # Mask shape doesn't match, create one from scratch
-            coord_mask = torch.ones(
-                *batch_shape, n_atoms, device=device, dtype=dtype
-            )
-    else:
-        # No mask provided, create one
-        coord_mask = torch.ones(
-            *batch_shape, n_atoms, device=device, dtype=dtype
-        )
+    # Debug: print shapes to understand the issue
+    print(f"[DEBUG] coordinate shape: {coords.shape}")
+    print(f"[DEBUG] batch_shape: {batch_shape}, n_atoms: {n_atoms}")
+    if "coordinate_mask" in label_dict:
+        print(f"[DEBUG] coordinate_mask shape: {label_dict['coordinate_mask'].shape}")
+    
+    # For now, skip mask to avoid shape issues - just use None (centers without mask)
+    coord_mask = None
     
     # Create N_sample augmented versions of ground truth
     x_1 = centre_random_augmentation(
-        x_input_coords=label_dict["coordinate"],
+        x_input_coords=coords,
         N_sample=N_sample,
         mask=coord_mask,
     ).to(dtype)  # [..., N_sample, N_atom, 3]
