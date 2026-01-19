@@ -495,6 +495,7 @@ class RNAProDesignSimple(nn.Module):
         # Debug: validate shapes
         coords = label_dict["coordinate"]
         mask = label_dict["coordinate_mask"]
+        logger.info(f"DEBUG: coords shape={coords.shape}, mask shape={mask.shape}, coords dtype={coords.dtype}, mask dtype={mask.dtype}")
         assert coords.ndim == 3 and coords.shape[-1] == 3, f"Expected coords [B, N, 3], got {coords.shape}"
         assert mask.ndim == 2, f"Expected mask [B, N], got {mask.shape}"
         assert coords.shape[:-1] == mask.shape, f"Shape mismatch: coords {coords.shape} vs mask {mask.shape}"
