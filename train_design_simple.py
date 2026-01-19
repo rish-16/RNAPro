@@ -328,12 +328,17 @@ class RNAProDesignSimple(nn.Module):
             # Assume it's the state dict directly
             state_dict = checkpoint
         
+        # Remove 'module.' prefix if present (from DDP)
+        if all(k.startswith("module.") for k in list(state_dict.keys())[:10]):
+            logger.info("Removing 'module.' prefix from checkpoint keys (DDP checkpoint)")
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+        
         # Debug: show available top-level keys
         top_keys = set(k.split('.')[0] for k in state_dict.keys())
         logger.info(f"Checkpoint top-level keys: {top_keys}")
         
         # Load Pairformer - try different possible prefixes
-        pairformer_prefixes = ["pairformer_stack.", "model.pairformer_stack.", "pairformer."]
+        pairformer_prefixes = ["pairformer_stack.", "pairformer.", "trunk.pairformer_stack."]
         pairformer_state = {}
         
         for prefix in pairformer_prefixes:
@@ -360,7 +365,7 @@ class RNAProDesignSimple(nn.Module):
             logger.warning("No PairformerStack weights found in checkpoint")
         
         # Load DiffusionModule - try different possible prefixes
-        diffusion_prefixes = ["diffusion_module.", "model.diffusion_module.", "diffusion."]
+        diffusion_prefixes = ["diffusion_module.", "diffusion.", "structure_module."]
         diffusion_state = {}
         
         for prefix in diffusion_prefixes:
@@ -389,7 +394,7 @@ class RNAProDesignSimple(nn.Module):
         # Try to load linear layers if they exist in checkpoint
         linear_keys = ["linear_no_bias_sinit", "linear_no_bias_zinit1", "linear_no_bias_zinit2"]
         for key in linear_keys:
-            for prefix in ["", "model."]:
+            for prefix in ["", "trunk."]:
                 full_key = f"{prefix}{key}.weight"
                 if full_key in state_dict:
                     target_name = key.replace("linear_no_bias_", "linear_")
