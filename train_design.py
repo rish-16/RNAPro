@@ -300,8 +300,8 @@ class DesignTrainer:
         
         # Learning rate scheduler
         self.scheduler = get_lr_scheduler(
-            self.optimizer,
-            self.configs,
+            configs=self.configs,
+            optimizer=self.optimizer,
         )
         
         # EMA
