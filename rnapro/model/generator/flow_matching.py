@@ -446,11 +446,20 @@ def sample_flow_matching_training(
     device = label_dict["coordinate"].device
     dtype = label_dict["coordinate"].dtype
     
+    # Get mask, ensure correct shape
+    coord_mask = label_dict.get("coordinate_mask")
+    if coord_mask is not None:
+        # Ensure mask has correct shape [batch, N_atom] matching coords [batch, N_atom, 3]
+        expected_shape = label_dict["coordinate"].shape[:-1]
+        if coord_mask.shape != expected_shape:
+            # Create mask from coords if shapes don't match
+            coord_mask = None
+    
     # Create N_sample augmented versions of ground truth
     x_1 = centre_random_augmentation(
         x_input_coords=label_dict["coordinate"],
         N_sample=N_sample,
-        mask=label_dict.get("coordinate_mask"),
+        mask=coord_mask,
     ).to(dtype)  # [..., N_sample, N_atom, 3]
     
     # Sample timesteps for each sample
