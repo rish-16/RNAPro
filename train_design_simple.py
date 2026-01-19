@@ -185,9 +185,34 @@ class RNADesignDataset(torch.utils.data.Dataset):
             if key in data:
                 coords = data[key]
                 if isinstance(coords, torch.Tensor):
-                    return coords.float()
+                    coords = coords.float()
                 else:
-                    return torch.tensor(coords, dtype=torch.float32)
+                    coords = torch.tensor(coords, dtype=torch.float32)
+                
+                # Ensure shape is [N, 3]
+                if coords.ndim == 1:
+                    # Single point [3] -> [1, 3]
+                    if coords.shape[0] == 3:
+                        coords = coords.unsqueeze(0)
+                    else:
+                        continue
+                elif coords.ndim == 2:
+                    # [N, 3] - correct shape
+                    if coords.shape[-1] != 3:
+                        continue
+                elif coords.ndim == 3:
+                    # [1, N, 3] or [N, A, 3] - take first slice or reshape
+                    if coords.shape[0] == 1:
+                        coords = coords.squeeze(0)  # [N, 3]
+                    elif coords.shape[-1] == 3:
+                        # Flatten to [N*A, 3] if all-atom, or just take first
+                        coords = coords.reshape(-1, 3)
+                    else:
+                        continue
+                else:
+                    continue
+                
+                return coords
         return None
     
     def _extract_c4_coords(self, pdb_path: Path, log_errors: bool = True) -> Optional[torch.Tensor]:
@@ -466,6 +491,13 @@ class RNAProDesignSimple(nn.Module):
         """
         # Create features
         input_feature_dict, label_dict, s_inputs, s, z = self.create_input_features(batch)
+        
+        # Debug: validate shapes
+        coords = label_dict["coordinate"]
+        mask = label_dict["coordinate_mask"]
+        assert coords.ndim == 3 and coords.shape[-1] == 3, f"Expected coords [B, N, 3], got {coords.shape}"
+        assert mask.ndim == 2, f"Expected mask [B, N], got {mask.shape}"
+        assert coords.shape[:-1] == mask.shape, f"Shape mismatch: coords {coords.shape} vs mask {mask.shape}"
         
         # Run Pairformer
         s, z = self.pairformer_stack(
