@@ -471,8 +471,8 @@ class RNAProDesignSimple(nn.Module):
         s, z = self.pairformer_stack(
             s, z,
             pair_mask=None,
-            triangle_multiplicative=True,
-            triangle_attention=True,
+            triangle_multiplicative="torch",
+            triangle_attention="torch",
         )
         
         # CFG: randomly drop conditioning
