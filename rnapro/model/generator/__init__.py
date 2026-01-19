@@ -15,8 +15,30 @@
 """
 __init__.py for generator subpackage.
 
-Note: The diffusion-based generation is handled by the main RNAPro model
-via sample_diffusion() and sample_diffusion_training() in generator.py
+Re-exports diffusion functions from the parent generator.py module.
 """
 
-__all__ = []
+# Import from the sibling generator.py file
+# This allows `from rnapro.model.generator import ...` to work
+import sys
+import importlib.util
+from pathlib import Path
+
+# Load the generator.py module from the parent directory
+_generator_path = Path(__file__).parent.parent / "generator.py"
+_spec = importlib.util.spec_from_file_location("_generator_module", _generator_path)
+_generator_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_generator_module)
+
+# Re-export the classes and functions
+TrainingNoiseSampler = _generator_module.TrainingNoiseSampler
+InferenceNoiseScheduler = _generator_module.InferenceNoiseScheduler
+sample_diffusion = _generator_module.sample_diffusion
+sample_diffusion_training = _generator_module.sample_diffusion_training
+
+__all__ = [
+    "TrainingNoiseSampler",
+    "InferenceNoiseScheduler", 
+    "sample_diffusion",
+    "sample_diffusion_training",
+]
