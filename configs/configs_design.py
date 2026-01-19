@@ -131,7 +131,7 @@ optim_configs = {
     "lr": 1e-4,
     "lr_scheduler": "cosine_annealing",
     "warmup_steps": 1000,
-    "max_steps": RequiredValue(int),
+    "max_steps": 100000,  # Default: 100k steps, override with --max_steps
     "min_lr_ratio": 0.01,
     "decay_every_n_steps": 50000,
     "grad_clip_norm": 1.0,

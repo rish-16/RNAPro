@@ -115,7 +115,7 @@ def generate_unconditional(
         coordinates: [n_samples, N_atom, 3] generated coordinates.
     """
     if seed is not None:
-        seed_everything(seed)
+        seed_everything(seed=seed, deterministic=False)
     
     logger.info(f"Generating {n_samples} structures of length {length}")
     
@@ -166,7 +166,7 @@ def generate_with_ss_constraint(
         coordinates: [n_samples, N_atom, 3] generated coordinates.
     """
     if seed is not None:
-        seed_everything(seed)
+        seed_everything(seed=seed, deterministic=False)
     
     length = len(dot_bracket)
     logger.info(f"Generating {n_samples} structures for SS: {dot_bracket}")
@@ -237,7 +237,7 @@ def generate_with_cfg(
         coordinates: [n_samples, N_atom, 3] generated coordinates.
     """
     if seed is not None:
-        seed_everything(seed)
+        seed_everything(seed=seed, deterministic=False)
     
     # Determine length from dot_bracket if provided
     if dot_bracket is not None:
@@ -325,7 +325,7 @@ def generate_with_distance_constraint(
         coordinates: [n_samples, N_atom, 3] generated coordinates.
     """
     if seed is not None:
-        seed_everything(seed)
+        seed_everything(seed=seed, deterministic=False)
     
     logger.info(f"Generating {n_samples} structures with distance constraints")
     

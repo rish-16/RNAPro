@@ -114,6 +114,7 @@ class ConfigManager(object):
         """
         all_keys = {}
         default_configs = {}
+        print (config_dict)
         for key, value in config_dict.items():
             assert "." not in key
             if isinstance(value, (dict)):

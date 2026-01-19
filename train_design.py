@@ -237,7 +237,10 @@ class DesignTrainer:
         self.dtype = torch.bfloat16 if self.configs.dtype == "bf16" else torch.float32
         
         # Seed
-        seed_everything(self.configs.seed + DIST_WRAPPER.rank)
+        seed_everything(
+            seed=self.configs.seed + DIST_WRAPPER.rank,
+            deterministic=self.configs.deterministic,
+        )
     
     def init_model(self):
         """Initialize model and optionally load pretrained weights."""
@@ -739,7 +742,7 @@ def main():
     """Main entry point."""
     # Parse arguments
     args = parse_sys_args()
-    configs = parse_configs(args, design_configs)
+    configs = parse_configs(design_configs, args)
     
     # Create trainer and run
     trainer = DesignTrainer(configs)
