@@ -445,15 +445,23 @@ def sample_flow_matching_training(
     batch_shape = label_dict["coordinate"].shape[:-2]
     device = label_dict["coordinate"].device
     dtype = label_dict["coordinate"].dtype
+    n_atoms = label_dict["coordinate"].shape[-2]
     
-    # Get mask, ensure correct shape
+    # Get mask, ensure correct shape [batch..., N_atom] matching coords [batch..., N_atom, 3]
     coord_mask = label_dict.get("coordinate_mask")
     if coord_mask is not None:
-        # Ensure mask has correct shape [batch, N_atom] matching coords [batch, N_atom, 3]
-        expected_shape = label_dict["coordinate"].shape[:-1]
+        # Check if mask has correct number of dimensions and last dim matches n_atoms
+        expected_shape = label_dict["coordinate"].shape[:-1]  # Remove xyz dim
         if coord_mask.shape != expected_shape:
-            # Create mask from coords if shapes don't match
-            coord_mask = None
+            # Mask shape doesn't match, create one from scratch
+            coord_mask = torch.ones(
+                *batch_shape, n_atoms, device=device, dtype=dtype
+            )
+    else:
+        # No mask provided, create one
+        coord_mask = torch.ones(
+            *batch_shape, n_atoms, device=device, dtype=dtype
+        )
     
     # Create N_sample augmented versions of ground truth
     x_1 = centre_random_augmentation(
