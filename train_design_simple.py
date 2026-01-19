@@ -337,24 +337,18 @@ class RNAProDesignSimple(nn.Module):
         top_keys = set(k.split('.')[0] for k in state_dict.keys())
         logger.info(f"Checkpoint top-level keys: {top_keys}")
         
-        # Load Pairformer - try different possible prefixes
-        pairformer_prefixes = ["pairformer_stack.", "pairformer.", "trunk.pairformer_stack."]
-        pairformer_state = {}
-        
-        for prefix in pairformer_prefixes:
-            pairformer_state = {
-                k.replace(prefix, ""): v 
-                for k, v in state_dict.items() 
-                if k.startswith(prefix)
-            }
-            if pairformer_state:
-                logger.info(f"Found pairformer weights with prefix '{prefix}'")
-                break
+        # Load PairformerStack weights (prefix: pairformer_stack.)
+        pairformer_state = {
+            k.replace("pairformer_stack.", ""): v 
+            for k, v in state_dict.items() 
+            if k.startswith("pairformer_stack.")
+        }
         
         if pairformer_state:
+            logger.info(f"Found {len(pairformer_state)} pairformer_stack weights")
             try:
                 missing, unexpected = self.pairformer_stack.load_state_dict(pairformer_state, strict=False)
-                logger.info(f"Loaded PairformerStack: {len(pairformer_state)} params, {len(missing)} missing, {len(unexpected)} unexpected")
+                logger.info(f"Loaded PairformerStack: {len(missing)} missing, {len(unexpected)} unexpected")
                 if missing:
                     logger.warning(f"Missing keys (first 5): {missing[:5]}")
                 if unexpected:
@@ -364,24 +358,18 @@ class RNAProDesignSimple(nn.Module):
         else:
             logger.warning("No PairformerStack weights found in checkpoint")
         
-        # Load DiffusionModule - try different possible prefixes
-        diffusion_prefixes = ["diffusion_module.", "diffusion.", "structure_module."]
-        diffusion_state = {}
-        
-        for prefix in diffusion_prefixes:
-            diffusion_state = {
-                k.replace(prefix, ""): v 
-                for k, v in state_dict.items() 
-                if k.startswith(prefix)
-            }
-            if diffusion_state:
-                logger.info(f"Found diffusion weights with prefix '{prefix}'")
-                break
+        # Load DiffusionModule weights (prefix: diffusion_module.)
+        diffusion_state = {
+            k.replace("diffusion_module.", ""): v 
+            for k, v in state_dict.items() 
+            if k.startswith("diffusion_module.")
+        }
         
         if diffusion_state:
+            logger.info(f"Found {len(diffusion_state)} diffusion_module weights")
             try:
                 missing, unexpected = self.diffusion_module.load_state_dict(diffusion_state, strict=False)
-                logger.info(f"Loaded DiffusionModule: {len(diffusion_state)} params, {len(missing)} missing, {len(unexpected)} unexpected")
+                logger.info(f"Loaded DiffusionModule: {len(missing)} missing, {len(unexpected)} unexpected")
                 if missing:
                     logger.warning(f"Missing keys (first 5): {missing[:5]}")
                 if unexpected:
@@ -391,16 +379,22 @@ class RNAProDesignSimple(nn.Module):
         else:
             logger.warning("No DiffusionModule weights found in checkpoint")
         
-        # Try to load linear layers if they exist in checkpoint
-        linear_keys = ["linear_no_bias_sinit", "linear_no_bias_zinit1", "linear_no_bias_zinit2"]
-        for key in linear_keys:
-            for prefix in ["", "trunk."]:
-                full_key = f"{prefix}{key}.weight"
-                if full_key in state_dict:
-                    target_name = key.replace("linear_no_bias_", "linear_")
-                    if hasattr(self, target_name):
-                        getattr(self, target_name).weight.data = state_dict[full_key]
-                        logger.info(f"Loaded {target_name} from checkpoint")
+        # Load linear init layers (at top level in checkpoint)
+        # Checkpoint has: linear_no_bias_sinit, linear_no_bias_zinit1, linear_no_bias_zinit2
+        # Our model has: linear_sinit, linear_zinit1, linear_zinit2
+        init_mapping = {
+            "linear_no_bias_sinit.weight": "linear_sinit",
+            "linear_no_bias_zinit1.weight": "linear_zinit1",
+            "linear_no_bias_zinit2.weight": "linear_zinit2",
+        }
+        
+        for ckpt_key, model_attr in init_mapping.items():
+            if ckpt_key in state_dict:
+                if hasattr(self, model_attr):
+                    getattr(self, model_attr).weight.data = state_dict[ckpt_key]
+                    logger.info(f"Loaded {model_attr} from {ckpt_key}")
+            else:
+                logger.warning(f"Init layer {ckpt_key} not found in checkpoint")
     
     def create_input_features(
         self,
@@ -593,26 +587,6 @@ def train(args):
         "c_z": 128,
         "c_s_inputs": 449,
         "sigma_data": 16.0,
-        "model": {
-            "pairformer": {
-                "n_blocks": 48,
-                "n_heads": 16,
-                "c_s": 384,
-                "c_z": 128,
-            },
-            "diffusion_module": {
-                "sigma_data": 16.0,
-                "c_atom": 128,
-                "c_atompair": 16,
-                "c_token": 768,
-                "c_s": 384,
-                "c_z": 128,
-                "c_s_inputs": 449,
-                "atom_encoder": {"n_blocks": 3, "n_heads": 4},
-                "transformer": {"n_blocks": 24, "n_heads": 16},
-                "atom_decoder": {"n_blocks": 3, "n_heads": 4},
-            },
-        },
     })
     
     # Model
@@ -622,8 +596,28 @@ def train(args):
     from rnapro.model.modules.pairformer import PairformerStack
     from rnapro.model.modules.diffusion import DiffusionModule
     
-    model.pairformer_stack = PairformerStack(**configs.model.pairformer)
-    model.diffusion_module = DiffusionModule(**configs.model.diffusion_module)
+    # PairformerStack: 48 blocks, 16 heads
+    model.pairformer_stack = PairformerStack(
+        n_blocks=48,
+        n_heads=16,
+        c_s=384,
+        c_z=128,
+        dropout=0.25,
+    )
+    
+    # DiffusionModule: matches Protenix checkpoint structure
+    model.diffusion_module = DiffusionModule(
+        sigma_data=16.0,
+        c_atom=128,
+        c_atompair=16,
+        c_token=768,
+        c_s=384,
+        c_z=128,
+        c_s_inputs=449,
+        atom_encoder={"n_blocks": 3, "n_heads": 4},
+        transformer={"n_blocks": 24, "n_heads": 16},
+        atom_decoder={"n_blocks": 3, "n_heads": 4},
+    )
     
     # Load pretrained weights
     if args.checkpoint_path:
