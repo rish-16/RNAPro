@@ -532,11 +532,28 @@ class RNAProDesignSimple(nn.Module):
         use_conditioning = not (self.training and random.random() < self.cfg_drop_prob)
         
         # Diffusion training step
+        # Note: sample_diffusion_training expands coords to [B, N_sample, N, 3]
+        # but input_feature_dict stays at [B, N, ...]. The DiffusionModule.f_forward
+        # handles this by expanding s_trunk/z_pair internally.
+        # However, atom_to_token_idx also needs to match the expanded shape.
+        # We need to expand input_feature_dict for N_sample dimension.
+        
+        N_sample = n_sample
+        expanded_input_feature_dict = {}
+        for k, v in input_feature_dict.items():
+            if isinstance(v, torch.Tensor):
+                # Expand from [B, ...] to [B, N_sample, ...]
+                expanded_input_feature_dict[k] = v.unsqueeze(1).expand(
+                    v.shape[0], N_sample, *v.shape[1:]
+                ).contiguous()
+            else:
+                expanded_input_feature_dict[k] = v
+        
         x_gt_aug, x_denoised, noise_level = sample_diffusion_training(
             noise_sampler=self.noise_sampler,
             denoise_net=self.diffusion_module,
             label_dict=label_dict,
-            input_feature_dict=input_feature_dict,
+            input_feature_dict=expanded_input_feature_dict,
             s_inputs=s_inputs,
             s_trunk=s,
             z_trunk=z,
