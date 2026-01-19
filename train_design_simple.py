@@ -533,19 +533,36 @@ class RNAProDesignSimple(nn.Module):
         
         # Diffusion training step
         # Note: sample_diffusion_training expands coords to [B, N_sample, N, 3]
-        # but input_feature_dict stays at [B, N, ...]. The DiffusionModule.f_forward
-        # handles this by expanding s_trunk/z_pair internally.
-        # However, atom_to_token_idx also needs to match the expanded shape.
-        # We need to expand input_feature_dict for N_sample dimension.
+        # The DiffusionModule.f_forward passes token-level features (asym_id, residue_index, etc.)
+        # to DiffusionConditioning which expects [B, N] shape.
+        # But atom-level features (ref_pos, ref_mask, atom_to_token_idx, etc.) go to
+        # AtomAttentionEncoder which expects [B, N_sample, N_atom, ...] shape.
+        # 
+        # The model handles this internally by expanding s_trunk/z_pair after DiffusionConditioning.
+        # For atom features, it uses the batch_shape from ref_pos, so we need those to match.
+        # 
+        # Solution: Keep token-level features at [B, N] but expand atom-level features to [B, N_sample, N].
         
         N_sample = n_sample
+        
+        # Token-level features stay at [B, N] - used by DiffusionConditioning
+        token_level_keys = {"asym_id", "residue_index", "entity_id", "token_index", "sym_id"}
+        
+        # Atom-level features need [B, N_sample, N_atom, ...] - used by AtomAttentionEncoder
+        atom_level_keys = {"ref_pos", "ref_charge", "ref_mask", "ref_space_uid", 
+                          "ref_element", "ref_atom_name_chars", "atom_to_token_idx"}
+        
         expanded_input_feature_dict = {}
         for k, v in input_feature_dict.items():
             if isinstance(v, torch.Tensor):
-                # Expand from [B, ...] to [B, N_sample, ...]
-                expanded_input_feature_dict[k] = v.unsqueeze(1).expand(
-                    v.shape[0], N_sample, *v.shape[1:]
-                ).contiguous()
+                if k in atom_level_keys:
+                    # Expand from [B, N, ...] to [B, N_sample, N, ...]
+                    expanded_input_feature_dict[k] = v.unsqueeze(1).expand(
+                        v.shape[0], N_sample, *v.shape[1:]
+                    ).contiguous()
+                else:
+                    # Keep token-level features unchanged
+                    expanded_input_feature_dict[k] = v
             else:
                 expanded_input_feature_dict[k] = v
         
