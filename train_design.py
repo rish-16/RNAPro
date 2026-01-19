@@ -292,9 +292,9 @@ class DesignTrainer:
         self.print(f"Optimizing {len(trainable_params)} parameter groups")
         
         self.optimizer = get_optimizer(
-            self.model,
-            self.configs,
-            finetune_params=[],
+            configs=self.configs,
+            model=self.model,
+            param_names=[],
         )
         
         # Learning rate scheduler
