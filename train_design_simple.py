@@ -724,20 +724,65 @@ def inspect_checkpoint(checkpoint_path: str):
             state_dict = checkpoint
             print("\nUsing checkpoint directly as state_dict")
         
-        # Count keys by prefix
+        # Remove module. prefix for analysis
+        if all(k.startswith("module.") for k in list(state_dict.keys())[:10]):
+            print("\nStripping 'module.' prefix for analysis...")
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+        
+        # Count keys by first-level prefix
         prefix_counts = {}
         for k in state_dict.keys():
             prefix = k.split('.')[0]
             prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
         
-        print(f"\nParameter counts by prefix:")
+        print(f"\nParameter counts by first-level prefix:")
         for prefix, count in sorted(prefix_counts.items(), key=lambda x: -x[1]):
             print(f"  {prefix}: {count}")
         
-        # Show sample keys
-        print(f"\nSample keys (first 20):")
-        for k in list(state_dict.keys())[:20]:
+        # Count keys by second-level prefix
+        print(f"\nParameter counts by two-level prefix:")
+        prefix2_counts = {}
+        for k in state_dict.keys():
+            parts = k.split('.')
+            if len(parts) >= 2:
+                prefix = '.'.join(parts[:2])
+            else:
+                prefix = parts[0]
+            prefix2_counts[prefix] = prefix2_counts.get(prefix, 0) + 1
+        
+        for prefix, count in sorted(prefix2_counts.items(), key=lambda x: -x[1])[:20]:
+            print(f"  {prefix}: {count}")
+        
+        # Search for specific patterns
+        print(f"\n--- Keys containing 'pairformer' ---")
+        pairformer_keys = [k for k in state_dict.keys() if 'pairformer' in k.lower()]
+        print(f"Found {len(pairformer_keys)} keys")
+        for k in pairformer_keys[:10]:
             print(f"  {k}")
+        
+        print(f"\n--- Keys containing 'diffusion' ---")
+        diffusion_keys = [k for k in state_dict.keys() if 'diffusion' in k.lower()]
+        print(f"Found {len(diffusion_keys)} keys")
+        for k in diffusion_keys[:10]:
+            print(f"  {k}")
+        
+        print(f"\n--- Keys containing 'trunk' ---")
+        trunk_keys = [k for k in state_dict.keys() if 'trunk' in k.lower()]
+        print(f"Found {len(trunk_keys)} keys")
+        for k in trunk_keys[:10]:
+            print(f"  {k}")
+        
+        print(f"\n--- Keys containing 'structure' ---")
+        struct_keys = [k for k in state_dict.keys() if 'structure' in k.lower()]
+        print(f"Found {len(struct_keys)} keys")
+        for k in struct_keys[:10]:
+            print(f"  {k}")
+        
+        # Show all unique first two levels
+        print(f"\n--- All unique two-level prefixes ---")
+        for prefix in sorted(prefix2_counts.keys()):
+            print(f"  {prefix}")
+            
     else:
         print(f"Checkpoint is type: {type(checkpoint)}")
 
