@@ -93,6 +93,11 @@ data_configs = {
     "train_data_dir": RequiredValue(str),
     "val_data_dir": "",
     
+    # Data format options
+    "use_pdb_directly": False,        # If True, load PDB/CIF files directly (slower)
+    "pdb_file_pattern": "*.pdb",      # Glob pattern for PDB files
+    "atom_selection": "c4prime",      # "c4prime", "backbone", or "all"
+    
     # Data settings
     "max_length": 512,
     "min_length": 10,

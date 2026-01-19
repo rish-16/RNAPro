@@ -8,7 +8,9 @@ A flow matching-based generative model for RNA 3D structure design, fine-tuned f
 
 ### 1. Prepare Data
 
-**From PDB/CIF files:**
+You have **three options** for data loading:
+
+#### Option A: Preprocess to .pt files (Recommended for large datasets)
 ```bash
 python preprocess/prepare_design_data.py \
     --input_dir ./raw_structures \
@@ -17,7 +19,22 @@ python preprocess/prepare_design_data.py \
     --max_length 512
 ```
 
-**From existing .pt files:** Place them directly in `./data/train/`
+Then train with:
+```bash
+--train_data_dir ./data/train --use_pdb_directly False
+```
+
+#### Option B: Load PDB/CIF files directly (Simpler setup)
+```bash
+# No preprocessing needed - point directly to PDB files
+--train_data_dir ./raw_structures \
+--use_pdb_directly True \
+--pdb_file_pattern "*.pdb" \
+--atom_selection c4prime
+```
+
+#### Option C: From existing .pt files
+Place them directly in `./data/train/`
 
 Each `.pt` file should contain:
 ```python
@@ -108,6 +125,9 @@ sbatch slurm_sample_design.sh
 | `--freeze_pairformer` | False | Freeze pretrained pairformer |
 | `--freeze_diffusion` | False | Freeze pretrained diffusion module |
 | `--use_wandb` | True | Enable Weights & Biases logging |
+| `--use_pdb_directly` | False | Load PDB files directly (no preprocessing) |
+| `--pdb_file_pattern` | "*.pdb" | Glob pattern for PDB files |
+| `--atom_selection` | "c4prime" | Which atoms: c4prime, backbone, all |
 
 ---
 

@@ -108,8 +108,8 @@ def main() -> None:
     df = pd.read_csv(args.input_csv)
     structure_data = build_structure_data(df=df, max_n=args.max_n)
 
-    os.makedirs("release_data/kaggle", exist_ok=True)
-    file_path = os.path.join("release_data/kaggle", args.output_name)
+    os.makedirs("data/processed", exist_ok=True)
+    file_path = os.path.join("data/processed", args.output_name)
 
 
     torch.save(structure_data, file_path)

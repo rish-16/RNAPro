@@ -559,6 +559,9 @@ def get_design_dataloaders(
     val_data_dir: Optional[str] = None,
     batch_size: int = 4,
     num_workers: int = 4,
+    use_pdb_directly: bool = False,
+    pdb_file_pattern: str = "*.pdb",
+    atom_selection: str = "c4prime",
     **dataset_kwargs,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
@@ -569,13 +572,26 @@ def get_design_dataloaders(
         val_data_dir: Directory with validation data (optional).
         batch_size: Batch size.
         num_workers: Number of data loading workers.
-        **dataset_kwargs: Additional arguments for RNADesignDataset.
+        use_pdb_directly: If True, load from PDB/CIF files directly.
+                          If False, load from preprocessed .pt files.
+        pdb_file_pattern: Glob pattern for PDB files (e.g., "*.pdb", "*.cif").
+        atom_selection: Atom selection for PDB loading ("c4prime", "backbone", "all").
+        **dataset_kwargs: Additional arguments for dataset.
         
     Returns:
         train_loader: Training DataLoader.
         val_loader: Validation DataLoader (or None).
     """
-    train_dataset = RNADesignDataset(train_data_dir, **dataset_kwargs)
+    if use_pdb_directly:
+        train_dataset = RNADesignDatasetFromPDB(
+            pdb_dir=train_data_dir,
+            file_pattern=pdb_file_pattern,
+            atom_selection=atom_selection,
+            **dataset_kwargs,
+        )
+    else:
+        train_dataset = RNADesignDataset(train_data_dir, **dataset_kwargs)
+    
     train_dataset.train()
     
     train_loader = DataLoader(
@@ -590,7 +606,16 @@ def get_design_dataloaders(
     
     val_loader = None
     if val_data_dir is not None:
-        val_dataset = RNADesignDataset(val_data_dir, **dataset_kwargs)
+        if use_pdb_directly:
+            val_dataset = RNADesignDatasetFromPDB(
+                pdb_dir=val_data_dir,
+                file_pattern=pdb_file_pattern,
+                atom_selection=atom_selection,
+                **dataset_kwargs,
+            )
+        else:
+            val_dataset = RNADesignDataset(val_data_dir, **dataset_kwargs)
+        
         val_dataset.eval()
         
         val_loader = DataLoader(
